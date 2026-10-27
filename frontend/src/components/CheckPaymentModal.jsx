@@ -1,8 +1,17 @@
 import { useState } from 'react';
-import { X, ShieldAlert, ShieldCheck, Clock, AlertTriangle, Download } from 'lucide-react';
+import {
+  X, ShieldAlert, ShieldCheck, Clock, AlertTriangle, Download,
+  Upload, FileImage, Loader2,
+} from 'lucide-react';
 
-export default function CheckPaymentModal({ isOpen, onClose }) {
+const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
+
+export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSaved }) {
   const [inputText, setInputText] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [extractedText, setExtractedText] = useState('');
+  const [errorMessage, setErrorMessage] = useState(null);
+
   const [loading, setLoading] = useState(false);
   const [verdict, setVerdict] = useState(null);
   const [aiExplanation, setAiExplanation] = useState(null);
@@ -11,23 +20,80 @@ export default function CheckPaymentModal({ isOpen, onClose }) {
 
   if (!isOpen) return null;
 
+  const resetAll = () => {
+    setInputText('');
+    setSelectedFile(null);
+    setExtractedText('');
+    setErrorMessage(null);
+    setVerdict(null);
+    setAiExplanation(null);
+    setIsRecovery(false);
+  };
+
+  const handleClose = () => {
+    resetAll();
+    onClose();
+  };
+
+  const handleFileSelect = (file) => {
+    setErrorMessage(null);
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setErrorMessage('Please choose an image file (PNG or JPG).');
+      return;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setErrorMessage('Image is larger than 5 MB. Please compress it and try again.');
+      return;
+    }
+    setSelectedFile(file);
+  };
+
   const runCheck = async () => {
     setLoading(true);
     setVerdict(null);
     setAiExplanation(null);
-    setIsRecovery(false); // reset recovery mode for a new check
+    setExtractedText('');
+    setErrorMessage(null);
+    setIsRecovery(false);
+
     try {
-      const res = await fetch('http://localhost:8000/api/v1/check/payment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      let endpoint;
+      let body;
+      let headers;
+
+      if (selectedFile) {
+        endpoint = 'http://localhost:8000/api/v1/check/image';
+        body = new FormData();
+        body.append('file', selectedFile);
+        headers = {}; // fetch sets multipart boundary automatically
+      } else {
+        endpoint = 'http://localhost:8000/api/v1/check/payment';
+        body = JSON.stringify({
           text_input: inputText || 'Payment is pending. Please release goods.',
-        }),
-      });
+        });
+        headers = { 'Content-Type': 'application/json' };
+      }
+
+      const res = await fetch(endpoint, { method: 'POST', headers, body });
       const data = await res.json();
-      setVerdict(data);
+
+      if (data?.error) {
+        setErrorMessage(data.error);
+      } else if (selectedFile) {
+        // OCR response shape: { extracted_text, verdict }
+        setExtractedText(data.extracted_text || '');
+        setVerdict(data.verdict || null);
+        if (!data.verdict) {
+          setErrorMessage('The engine did not return a verdict for this image.');
+        }
+      } else {
+        setVerdict(data);
+      }
     } catch (err) {
       console.error('Backend not running?', err);
+      setErrorMessage('Could not reach the security engine. Is the backend running?');
     }
     setLoading(false);
   };
@@ -38,7 +104,7 @@ export default function CheckPaymentModal({ isOpen, onClose }) {
       const res = await fetch('http://localhost:8000/api/v1/assistant/explain', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ verdict: verdict }),
+        body: JSON.stringify({ verdict }),
       });
       const data = await res.json();
       setAiExplanation(data.response);
@@ -51,30 +117,47 @@ export default function CheckPaymentModal({ isOpen, onClose }) {
     setAiLoading(false);
   };
 
-  const handleClose = () => {
-    setVerdict(null);
-    setInputText('');
-    setAiExplanation(null);
-    setIsRecovery(false);
-    onClose();
+  const saveIncident = async () => {
+    try {
+      await fetch('http://localhost:8000/api/v1/incidents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Payment Check Flagged',
+          description: `Verdict: ${verdict.status} · ${verdict.reason_codes[0].description}`,
+          status: verdict.status,
+          is_demo: user.isDemo,
+        }),
+      });
+
+      onIncidentSaved?.(); // Tell App.jsx to refresh the dashboard stats
+      resetAll();
+      onClose();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to save incident.');
+    }
   };
 
-  // Generate a plain-text evidence report for SAPS / bank / insurer.
-  // Swap for jsPDF later if you want styled PDF output.
   const downloadEvidenceReport = () => {
     if (!verdict) return;
     const stamp = new Date().toISOString();
+    // Prefer the OCR-extracted text (what the engine actually analysed),
+    // then fall back to typed input.
+    const evidenceSource = (extractedText || inputText || '').trim();
+
     const lines = [
       'KHUSELA — INCIDENT EVIDENCE REPORT',
       '==================================',
       `Generated:        ${stamp}`,
       `Reported by:      Thabo (Small Business Owner)`,
+      `Source:           ${selectedFile ? `Image upload (${selectedFile.name})` : 'Text input'}`,
       `Verdict status:   ${verdict.status}`,
       `Recommended:      ${verdict.recommended_action}`,
       '',
       'Evidence submitted:',
       '-------------------',
-      inputText || '(none)',
+      evidenceSource || '(none)',
       '',
       'Reason codes:',
       '-------------',
@@ -128,21 +211,77 @@ export default function CheckPaymentModal({ isOpen, onClose }) {
         <div className="p-6">
           {!verdict ? (
             <>
-              <label className="block text-sm font-semibold text-obsidian mb-2">
-                Paste the message or payment evidence text
-              </label>
+              {/* ================= FILE DROPZONE ================= */}
+              <div
+                className="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center hover:border-mint-dark hover:bg-[#F8FAFC] transition-colors cursor-pointer mb-4"
+                onClick={() => document.getElementById('file-upload').click()}
+              >
+                <input
+                  id="file-upload"
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => handleFileSelect(e.target.files?.[0])}
+                />
+                {selectedFile ? (
+                  <>
+                    <FileImage className="mx-auto text-mint-dark mb-2" size={24} />
+                    <p className="text-sm font-bold text-obsidian break-all">
+                      {selectedFile.name}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {(selectedFile.size / 1024).toFixed(0)} KB · click to replace
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="mx-auto text-slate-400 mb-2" size={24} />
+                    <p className="text-sm font-bold text-obsidian">
+                      Click to upload a screenshot
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">PNG, JPG up to 5MB</p>
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3 mb-4">
+                <div className="h-px bg-slate-200 flex-1" />
+                <span className="text-xs font-semibold text-slate uppercase tracking-wider">
+                  or paste text
+                </span>
+                <div className="h-px bg-slate-200 flex-1" />
+              </div>
+
               <textarea
                 value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
+                onChange={(e) => {
+                  setInputText(e.target.value);
+                  // Typing clears a previously selected file to avoid ambiguity
+                  if (e.target.value && selectedFile) setSelectedFile(null);
+                }}
                 placeholder="e.g. 'Hi, I have paid the R2450. Here is the confirmation, please release the sneakers.'"
-                className="w-full bg-[#F8FAFC] border border-slate-200 rounded-xl p-4 text-sm text-obsidian focus:outline-none focus:border-mint-dark focus:ring-1 focus:ring-mint-dark resize-none h-32 mb-6 transition-all"
+                className="w-full bg-[#F8FAFC] border border-slate-200 rounded-xl p-4 text-sm text-obsidian focus:outline-none focus:border-mint-dark focus:ring-1 focus:ring-mint-dark resize-none h-32 mb-4 transition-all"
               />
+
+              {errorMessage && (
+                <div className="mb-4 p-3 rounded-lg border border-stop/20 bg-[#FEE2E2]/50 text-stop text-sm font-medium">
+                  {errorMessage}
+                </div>
+              )}
+
               <button
                 onClick={runCheck}
-                disabled={loading}
-                className="w-full bg-obsidian text-white font-bold py-3 rounded-xl hover:bg-graphite transition-colors disabled:opacity-50"
+                disabled={loading || (!selectedFile && !inputText.trim())}
+                className="w-full bg-obsidian text-white font-bold py-3 rounded-xl hover:bg-graphite transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                {loading ? 'Analyzing Evidence...' : 'Run Security Check'}
+                {loading ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    {selectedFile ? 'Reading screenshot…' : 'Analyzing Evidence…'}
+                  </>
+                ) : (
+                  'Run Security Check'
+                )}
               </button>
             </>
           ) : (
@@ -158,6 +297,22 @@ export default function CheckPaymentModal({ isOpen, onClose }) {
                   <p className="text-sm opacity-90">{verdict.recommended_action}</p>
                 </div>
               </div>
+
+              {/* What the engine actually read (OCR only) */}
+              {extractedText && (
+                <div className="bg-[#F8FAFC] rounded-xl p-4 border border-slate-200">
+                  <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-3">
+                    Text read from image
+                  </h4>
+                  <p className="text-xs text-slate-600 whitespace-pre-wrap font-mono leading-relaxed max-h-32 overflow-y-auto">
+                    {extractedText}
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-2 italic">
+                    OCR isn&apos;t perfect — double-check names, amounts and reference numbers
+                    against the original image.
+                  </p>
+                </div>
+              )}
 
               <div className="bg-[#F8FAFC] rounded-xl p-4 border border-slate-200">
                 <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-3">
@@ -222,7 +377,7 @@ export default function CheckPaymentModal({ isOpen, onClose }) {
                     <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
                       <span className="text-xs font-bold text-slate uppercase">Step 1</span>
                       <p className="text-sm font-bold text-obsidian">
-                        Call your bank's fraud line immediately.
+                        Call your bank&apos;s fraud line immediately.
                       </p>
                       <p className="text-xs text-slate mt-1">
                         FNB: 087 575 9444 | Capitec: 0860 010 2048
@@ -247,13 +402,26 @@ export default function CheckPaymentModal({ isOpen, onClose }) {
                 </div>
               )}
 
-              <button
-                type="button"
-                onClick={handleClose}
-                className="w-full bg-[#F8FAFC] border border-slate-200 text-obsidian font-bold py-3 rounded-xl hover:bg-slate-100 transition-colors mt-2"
-              >
-                Close & Save to Incident Log
-              </button>
+              {/* ================= SAVE / DISCARD ACTIONS ================= */}
+              <div className="flex gap-3 mt-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetAll();
+                    onClose();
+                  }}
+                  className="flex-1 bg-[#F8FAFC] border border-slate-200 text-obsidian font-bold py-3 rounded-xl hover:bg-slate-100 transition-colors"
+                >
+                  Discard
+                </button>
+                <button
+                  type="button"
+                  onClick={saveIncident}
+                  className="flex-1 bg-obsidian text-white font-bold py-3 rounded-xl hover:bg-graphite transition-colors"
+                >
+                  Save to Incident Centre
+                </button>
+              </div>
             </div>
           )}
         </div>

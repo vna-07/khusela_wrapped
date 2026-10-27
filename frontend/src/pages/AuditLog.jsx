@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Shield, MessageSquare, Monitor, Image as ImageIcon, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
-export default function AuditLog() {
+export default function AuditLog({ user }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -9,7 +9,8 @@ export default function AuditLog() {
     // Fetch logs every 3 seconds to simulate real-time updates
     const fetchLogs = async () => {
       try {
-        const res = await fetch('http://localhost:8000/api/v1/audit-logs');
+        const isDemo = Boolean(user?.isDemo);
+        const res = await fetch(`http://localhost:8000/api/v1/audit-logs?is_demo=${isDemo}`);
         const data = await res.json();
         setLogs(data);
       } catch (err) {
@@ -21,7 +22,7 @@ export default function AuditLog() {
     fetchLogs();
     const interval = setInterval(fetchLogs, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [user]);
 
   const formatDate = (isoString) => {
     const date = new Date(isoString);
