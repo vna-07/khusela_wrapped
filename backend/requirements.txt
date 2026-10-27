@@ -1,19 +1,10 @@
 fastapi
-uvicorn[standard]
+uvicorn
 pydantic
-pydantic-settings
-python-multipart
-httpx
+openai
+python-dotenv
 pillow
 pytesseract
-opencv-python-headless
-imagehash
-rapidfuzz
-pypdf
-scikit-learn
-joblib
-reportlab
-google-genai
-pytest
-# Turso client: confirm the currently maintained Python package
-# (libsql / libsql-experimental / SQLAlchemy libSQL dialect) before adding.
+python-multipart
+fpdf2
+requests
