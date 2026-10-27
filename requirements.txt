@@ -1,0 +1,19 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-multipart
+httpx
+pillow
+pytesseract
+opencv-python-headless
+imagehash
+rapidfuzz
+pypdf
+scikit-learn
+joblib
+reportlab
+google-genai
+pytest
+# Turso client: confirm the currently maintained Python package
+# (libsql / libsql-experimental / SQLAlchemy libSQL dialect) before adding.
