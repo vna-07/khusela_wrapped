@@ -130,31 +130,39 @@ def health():
 
 @app.post("/api/v1/dashboard/stats")
 async def get_dashboard_stats(req: DashboardRequest):
+    # Live incidents — created by Telegram uploads and by the web modal for
+    # non-demo users. These appear in BOTH demo and live views so a judge
+    # uploading via Telegram sees the counters move in real time.
+    live = [i for i in INCIDENTS if not i.get("is_demo")]
+    live_needs_review = len([i for i in live if i.get("status") in ("STOP", "WAIT", "ESCALATE")])
+
     if req.is_demo:
         return {
-            "checks_today": 24,
-            "needs_review": 5,
-            "open_incidents": 8,
+            "checks_today": 24 + len(live),
+            "needs_review": 5 + live_needs_review,
+            "open_incidents": 8 + len(live),
             "readiness": 72,
             "has_data": True,
         }
     else:
-        live_incidents = [i for i in INCIDENTS if not i.get("is_demo")]
         return {
-            "checks_today": 0,
-            "needs_review": len(live_incidents),
-            "open_incidents": len(live_incidents),
+            "checks_today": len(live),
+            "needs_review": live_needs_review,
+            "open_incidents": len(live),
             "readiness": None,
-            "has_data": len(live_incidents) > 0
+            "has_data": len(live) > 0
         }
 
 # ================= INCIDENTS =================
 
 @app.get("/api/v1/incidents")
 async def get_incidents(is_demo: bool = False):
+    live = [i for i in INCIDENTS if not i.get("is_demo")]
     if is_demo:
-        return DEMO_INCIDENTS
-    return [i for i in INCIDENTS if not i.get("is_demo")]
+        # In demo mode: live Telegram/web uploads appear ON TOP of the seeded cases,
+        # so the cross-channel magic is visible even for judges using "Try Demo".
+        return live + DEMO_INCIDENTS
+    return live
 
 @app.post("/api/v1/incidents")
 async def create_incident(req: IncidentCreate):
@@ -166,7 +174,7 @@ async def create_incident(req: IncidentCreate):
         "date": "Just now",
         "is_demo": req.is_demo
     }
-    INCIDENTS.append(new_incident)
+    INCIDENTS.insert(0, new_incident)
     
     add_audit_log(
         channel="Web Dashboard",
@@ -888,11 +896,35 @@ async def receive_telegram_message(request: Request):
                     "Here is your tamper-evident PDF evidence report for SAPS or your bank.",
                 )
 
+                # --- P0 CROSS-CHANNEL MAGIC ---
+                # Persist the Telegram upload into the shared INCIDENTS store so it
+                # appears on the Web Dashboard immediately. `is_demo: False` means
+                # it shows up in BOTH demo and live views (get_incidents prepends
+                # live incidents on top of DEMO_INCIDENTS in demo mode).
+                new_incident = {
+                    "id": f"TG-{msg_id}",
+                    "title": "Telegram Upload",
+                    "description": reason,
+                    "status": verdict.status,
+                    "date": "Just now",
+                    "is_demo": False,
+                }
+                INCIDENTS.insert(0, new_incident)
+
                 add_audit_log(
                     channel="Telegram",
                     sender=sender_name,
                     event_type="File Upload",
                     description=f"Processed file: {file_name}",
+                    context=f"Verdict: {verdict.status}",
+                    status="warning",
+                    is_demo=False,
+                )
+                add_audit_log(
+                    channel="Telegram",
+                    sender=sender_name,
+                    event_type="Incident Created",
+                    description="File processed via Telegram",
                     context=f"Verdict: {verdict.status}",
                     status="warning",
                     is_demo=False,
