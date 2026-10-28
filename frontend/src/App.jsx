@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Search, Bell, Home, Shield, MessageSquare, AlertCircle, 
   Settings, ChevronRight, CheckCircle2, AlertTriangle, 
-  X, Smartphone, Database, Send
+  X, Smartphone, Database, Send, Sparkles
 } from 'lucide-react';
 
 // Import Pages
@@ -43,6 +43,9 @@ export default function App() {
   ]);
   const [waInput, setWaInput] = useState('');
 
+  // --- WRAPPED SUMMARY MODAL ---
+  const [showWrapped, setShowWrapped] = useState(false);
+
   // --- DASHBOARD STATS STATE ---
   const [stats, setStats] = useState({
     checks_today: 0,
@@ -57,8 +60,9 @@ export default function App() {
   useEffect(() => {
     const fetchStats = async () => {
       // 1. INSTANT DEMO FALLBACK (Shows up even if backend is dead)
+      // Numbers match backend's seeded DEMO_INCIDENTS + dashboard response.
       if (user.isDemo) {
-        setStats({ checks_today: 18, needs_review: 2, open_incidents: 1, readiness: 72, has_data: true });
+        setStats({ checks_today: 24, needs_review: 5, open_incidents: 8, readiness: 72, has_data: true });
       }
 
       try {
@@ -119,7 +123,7 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
             message: userMsg,
-            context: `User is currently on the ${currentPage} page. Business: ${user.business}.` 
+            context: `User is currently on the ${currentPage} page. Business: ${user.business || user.workspace || 'your workspace'}.` 
           }),
           signal: controller.signal
         });
@@ -289,16 +293,25 @@ export default function App() {
                   </div>
                 )}
 
+                {/* ===== STEP A: Clickable metric cards ===== */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
-                  <StatCard title="Checks today" value={statsLoading ? "—" : stats.checks_today} trend={stats.has_data ? "+3" : "-"} />
-                  <StatCard title="Needs review" value={statsLoading ? "—" : stats.needs_review} trend={stats.has_data ? "+1" : "-"} warning={stats.needs_review > 0} />
-                  <StatCard title="Open incidents" value={statsLoading ? "—" : stats.open_incidents} trend="-" danger={stats.open_incidents > 0} />
-                  <StatCard 
-                    title="Readiness" 
-                    value={statsLoading ? "—" : (stats.readiness ? `${stats.readiness}/100` : "Pending")} 
-                    trend={stats.readiness ? "+6" : ""} 
-                    success={stats.readiness > 0} 
-                  />
+                  <div onClick={() => setIsCheckModalOpen(true)} className="cursor-pointer">
+                    <StatCard title="Checks today" value={statsLoading ? "—" : stats.checks_today} trend={stats.has_data ? "+3" : "-"} />
+                  </div>
+                  <div onClick={() => setCurrentPage('incidents')} className="cursor-pointer">
+                    <StatCard title="Needs review" value={statsLoading ? "—" : stats.needs_review} trend={stats.has_data ? "+1" : "-"} warning={stats.needs_review > 0} />
+                  </div>
+                  <div onClick={() => setCurrentPage('incidents')} className="cursor-pointer">
+                    <StatCard title="Open incidents" value={statsLoading ? "—" : stats.open_incidents} trend="-" danger={stats.open_incidents > 0} />
+                  </div>
+                  <div onClick={() => setCurrentPage('settings')} className="cursor-pointer">
+                    <StatCard 
+                      title="Readiness" 
+                      value={statsLoading ? "—" : (stats.readiness ? `${stats.readiness}/100` : "Pending")} 
+                      trend={stats.readiness ? "+6" : "N/A"} 
+                      success={stats.readiness > 0} 
+                    />
+                  </div>
                 </div>
 
                 <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm mt-6">
@@ -336,6 +349,39 @@ export default function App() {
                     </div>
                   )}
                 </div>
+
+                {/* ===== STEP B: How Khusela works panel ===== */}
+                <div className="mt-6 bg-obsidian rounded-xl overflow-hidden shadow-xl border border-white/10 relative">
+                  <div className="absolute top-0 right-0 w-64 h-64 bg-mint/10 blur-[80px] rounded-full pointer-events-none"></div>
+                  <div className="p-8 relative z-10 flex flex-col md:flex-row gap-8 items-center justify-between">
+                    <div className="flex-1">
+                      <h3 className="text-2xl font-bold text-white mb-2">How Khusela protects you</h3>
+                      <p className="text-slate text-sm leading-relaxed mb-6 max-w-2xl">
+                        Khusela uses deterministic rules to verify payments and check documents. When something looks wrong, our AI (Khuzeka) explains exactly why, creates a task for you, and generates a tamper-evident PDF report. We never claim funds have cleared—only your bank can confirm that.
+                      </p>
+                      <div className="flex flex-wrap gap-4">
+                        <div className="flex items-center gap-2 text-xs font-bold text-white bg-white/10 px-3 py-1.5 rounded-full">
+                          <div className="w-2 h-2 rounded-full bg-mint"></div> MATCH: Fields align
+                        </div>
+                        <div className="flex items-center gap-2 text-xs font-bold text-white bg-white/10 px-3 py-1.5 rounded-full">
+                          <div className="w-2 h-2 rounded-full bg-wait"></div> WAIT: Needs verification
+                        </div>
+                        <div className="flex items-center gap-2 text-xs font-bold text-white bg-white/10 px-3 py-1.5 rounded-full">
+                          <div className="w-2 h-2 rounded-full bg-stop"></div> STOP: High risk
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 flex gap-3 flex-col w-full md:w-auto">
+                      <button onClick={() => setIsCheckModalOpen(true)} className="bg-mint text-obsidian font-bold py-3 px-6 rounded-lg hover:bg-white transition-colors w-full shadow-[0_0_20px_rgba(85,230,193,0.3)]">
+                        Run a Security Check
+                      </button>
+                      <button onClick={() => setShowWrapped(true)} className="bg-white/10 border border-white/20 text-white font-bold py-3 px-6 rounded-lg hover:bg-white/20 transition-colors w-full flex items-center justify-center gap-2">
+                        <Sparkles size={16} className="text-mint"/> View Security Wrapped
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
               </div>
             )}
 
@@ -455,6 +501,60 @@ export default function App() {
           user={user}
           onIncidentSaved={() => setRefreshStats(prev => prev + 1)}
         />
+
+        {/* ================= SECURITY WRAPPED MODAL ================= */}
+        {showWrapped && (
+          <div
+            className="fixed inset-0 z-[60] bg-obsidian/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"
+            onClick={() => setShowWrapped(false)}
+          >
+            <div
+              className="bg-obsidian border-2 border-mint/30 rounded-3xl max-w-lg w-full p-8 md:p-10 text-center relative overflow-hidden animate-in zoom-in-95 duration-200"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="absolute top-0 right-0 w-72 h-72 bg-mint/20 blur-[100px] rounded-full pointer-events-none"></div>
+              <div className="absolute bottom-0 left-0 w-72 h-72 bg-wait/10 blur-[100px] rounded-full pointer-events-none"></div>
+
+              <div className="relative z-10">
+                <Sparkles size={40} className="text-mint mx-auto mb-4" />
+                <h2 className="text-2xl md:text-3xl font-black text-white mb-2 tracking-tight">
+                  Your 2026 Security Wrapped
+                </h2>
+                <p className="text-slate text-sm mb-8">A snapshot of how you stayed protected this year.</p>
+
+                <div className="grid grid-cols-2 gap-3 mb-8">
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                    <p className="text-4xl font-black text-mint mb-1">{stats.checks_today}</p>
+                    <p className="text-[10px] text-slate uppercase font-bold tracking-wider">Checks run</p>
+                  </div>
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                    <p className="text-4xl font-black text-wait mb-1">{stats.needs_review}</p>
+                    <p className="text-[10px] text-slate uppercase font-bold tracking-wider">Flagged</p>
+                  </div>
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                    <p className="text-4xl font-black text-stop mb-1">{stats.open_incidents}</p>
+                    <p className="text-[10px] text-slate uppercase font-bold tracking-wider">Incidents</p>
+                  </div>
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                    <p className="text-4xl font-black text-white mb-1">{stats.readiness || 0}</p>
+                    <p className="text-[10px] text-slate uppercase font-bold tracking-wider">Readiness</p>
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate italic mb-6">
+                  Every check keeps your business one step ahead of the scam.
+                </p>
+
+                <button
+                  onClick={() => setShowWrapped(false)}
+                  className="bg-mint text-obsidian font-bold py-3 px-8 rounded-xl hover:bg-white transition-colors w-full"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -484,7 +584,7 @@ function StatCard({ title, value, trend, warning, danger, success }) {
   if (success) trendColor = "text-mint-dark";
 
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm hover:-translate-y-0.5 transition-transform duration-200 cursor-default">
+    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 cursor-pointer">
       <h4 className="text-xs font-semibold text-slate uppercase tracking-wider mb-2">{title}</h4>
       <div className="text-3xl font-bold text-obsidian mb-1">{value}</div>
       <div className={`text-xs font-bold ${trendColor}`}>{trend} <span className="text-slate font-medium">vs yesterday</span></div>

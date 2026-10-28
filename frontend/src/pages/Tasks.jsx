@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
 import { CheckCircle2, Circle, Clock } from 'lucide-react';
 
+// Match the rest of the app — hardcoded Render backend
+const API_BASE = 'https://khusela-wrapped.onrender.com';
+
 export default function Tasks() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -9,13 +12,13 @@ export default function Tasks() {
   const fetchTasks = async () => {
     setLoading(true);
     setError(null);
-    
-    // Create an AbortController to timeout if it takes too long
+
+    // 60s — Render free tier can take 30–50s to wake from cold start
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 seconds
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
 
     try {
-      const res = await fetch('import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/tasks', { signal: controller.signal });
+      const res = await fetch(`${API_BASE}/api/v1/tasks`, { signal: controller.signal });
       if (!res.ok) throw new Error("Backend returned an error");
       const data = await res.json();
       setTasks(data);
@@ -39,7 +42,7 @@ export default function Tasks() {
   const completeTask = async (taskId) => {
     try {
       setTasks(tasks.map(t => t.id === taskId ? { ...t, status: 'done' } : t));
-      await fetch(`import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/tasks/${taskId}/complete`, { method: 'POST' });
+      await fetch(`${API_BASE}/api/v1/tasks/${taskId}/complete`, { method: 'POST' });
     } catch (err) {
       console.error(err);
       fetchTasks(); // Revert on failure
