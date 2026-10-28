@@ -41,6 +41,21 @@ NETWORK_FINGERPRINTS = {
     "another_fake_hash": "Flagged by 2 sellers in Cape Town",
 }
 
+# ================= SEEDED DEMO INCIDENTS =================
+# Shown only when the frontend asks for is_demo=true (Judge / Try Demo flow).
+# These are NOT in INCIDENTS — the live store remains empty until a real
+# user (or a demo user via "Save to Incident Centre") creates one.
+DEMO_INCIDENTS = [
+    {"id": "KZ-DEMO-1001", "title": "Payment confirmation", "description": "R8,500 payment slip, invoice, and bank extract. Reference and amount don't agree.", "status": "WAIT", "date": "Today, 09:42"},
+    {"id": "KZ-DEMO-1002", "title": "Statement reconciliation", "description": "Duplicate entry and balance discrepancy in sales ledger.", "status": "STOP", "date": "Yesterday, 14:15"},
+    {"id": "KZ-DEMO-1003", "title": "Supplier invoice review", "description": "Invoice, quotation and purchase order with different quantities.", "status": "WAIT", "date": "24 Oct, 10:00"},
+    {"id": "KZ-DEMO-1004", "title": "Certificate review", "description": "Business certificate registration number requires checking.", "status": "WAIT", "date": "23 Oct, 16:30"},
+    {"id": "KZ-DEMO-1005", "title": "Supplier impersonation warning", "description": "Urgent change of banking details requested via email.", "status": "STOP", "date": "22 Oct, 11:20"},
+    {"id": "KZ-DEMO-1006", "title": "Visual document inspection", "description": "Altered-looking amount region detected on receipt.", "status": "WAIT", "date": "21 Oct, 09:15"},
+    {"id": "KZ-DEMO-1007", "title": "Small-business record review", "description": "Stock records with an unexplained discrepancy.", "status": "WAIT", "date": "20 Oct, 13:45"},
+    {"id": "KZ-DEMO-1008", "title": "Consistent evidence", "description": "Invoice, receipt and transaction record agree on key fields.", "status": "MATCH", "date": "19 Oct, 08:00"},
+]
+
 # ================= PYDANTIC MODELS =================
 
 class CheckRequest(BaseModel):
@@ -116,13 +131,12 @@ def health():
 @app.post("/api/v1/dashboard/stats")
 async def get_dashboard_stats(req: DashboardRequest):
     if req.is_demo:
-        demo_incidents = [i for i in INCIDENTS if i.get("is_demo")]
         return {
-            "checks_today": 18,
-            "needs_review": 2 + len(demo_incidents),
-            "open_incidents": 1 + len(demo_incidents),
+            "checks_today": 24,
+            "needs_review": 5,
+            "open_incidents": 8,
             "readiness": 72,
-            "has_data": True
+            "has_data": True,
         }
     else:
         live_incidents = [i for i in INCIDENTS if not i.get("is_demo")]
@@ -139,14 +153,7 @@ async def get_dashboard_stats(req: DashboardRequest):
 @app.get("/api/v1/incidents")
 async def get_incidents(is_demo: bool = False):
     if is_demo:
-        demo_incidents = [i for i in INCIDENTS if i.get("is_demo")]
-        if not demo_incidents:
-            return [
-                {"id": "INC-1042", "title": "Payment evidence mismatch", "description": "R2,450 · Amount mismatch", "status": "WAIT", "date": "Today, 09:42", "is_demo": True},
-                {"id": "INC-1041", "title": "Supplier banking detail change", "description": "New account details received", "status": "STOP", "date": "Today, 08:17", "is_demo": True}
-            ]
-        return demo_incidents
-
+        return DEMO_INCIDENTS
     return [i for i in INCIDENTS if not i.get("is_demo")]
 
 @app.post("/api/v1/incidents")
@@ -180,6 +187,13 @@ async def download_incident_report(incident_id: str, is_demo: bool = False):
         if inc["id"] == incident_id:
             target_incident = inc
             break
+
+    # Demo fallback — allow PDF export for any seeded DEMO_INCIDENTS entry
+    if not target_incident and is_demo:
+        for inc in DEMO_INCIDENTS:
+            if inc["id"] == incident_id:
+                target_incident = inc
+                break
 
     if not target_incident and is_demo:
         target_incident = {
@@ -706,7 +720,30 @@ async def receive_telegram_message(request: Request):
                 is_demo=False,
             )
 
-            if text in ("/start", "/menu") or text.lower() in ("menu", "hi", "hello", "hey"):
+            # FIRST-TIME EXPERIENCE — /start triggers the auth flow
+            if text == "/start":
+                welcome_msg = (
+                    f"Hey {sender_name}! Welcome to Khuzeka Intelligence. 🔎\n\n"
+                    "I can help you investigate payment confirmations, bank statements, "
+                    "invoices, certificates, suspicious messages and other documents.\n\n"
+                    "Do you already have a Khuzeka account?"
+                )
+                await run_in_threadpool(
+                    send_telegram_message,
+                    chat_id,
+                    welcome_msg,
+                    {
+                        "inline_keyboard": [
+                            [{"text": "🔑 Log in", "callback_data": "auth_login"}],
+                            [{"text": "📝 Create account", "callback_data": "auth_create"}],
+                            [{"text": "🧪 Try demo", "callback_data": "auth_demo"}],
+                        ]
+                    },
+                )
+                return {"status": "success"}
+
+            # RETURNING USER — quick menu trigger
+            if text == "/menu" or text.lower() in ("menu", "hi", "hello", "hey"):
                 await run_in_threadpool(
                     send_telegram_message,
                     chat_id,
@@ -716,6 +753,7 @@ async def receive_telegram_message(request: Request):
                 )
                 return {"status": "success"}
 
+            # SMART ROUTING — payment check vs free-form AI
             is_payment = any(
                 w in text.lower()
                 for w in ["r2450", "paid", "proof", "pending", "overpaid"]
@@ -739,8 +777,8 @@ async def receive_telegram_message(request: Request):
             else:
                 # Route to Khuzeka AI — await directly; do NOT call asyncio.run()
                 system_prompt = (
-                    "Role: You are Khuzeka, an AI security assistant. Keep answers "
-                    "short and focused on business fraud prevention."
+                    "Role: You are Khuzeka, an empathetic, sharp AI assistant. "
+                    "Keep answers short and focused on business security."
                 )
                 ai_response = await generate_ai_response(system_prompt, text)
                 # No parse_mode — AI text often contains chars that break Markdown
@@ -887,7 +925,34 @@ async def receive_telegram_message(request: Request):
         # Clear the loading spinner
         await run_in_threadpool(_answer_callback, callback["id"])
 
-        if data == "menu_new":
+        # ---- AUTH callbacks (new) ----
+        if data == "auth_demo":
+            await run_in_threadpool(
+                send_telegram_message,
+                chat_id,
+                "🧪 *Demo Mode Activated*\n\nYou are now exploring synthetic data. "
+                "What would you like to do?",
+                get_telegram_menu(),
+                "Markdown",
+            )
+        elif data in ("auth_login", "auth_create"):
+            await run_in_threadpool(
+                send_telegram_message,
+                chat_id,
+                "🔒 *Secure Login*\n\nTo link your account securely, please open the "
+                "web dashboard and click 'Connect Telegram' in Settings to generate "
+                "your login code.",
+                None,
+                "Markdown",
+            )
+            await run_in_threadpool(
+                send_telegram_message,
+                chat_id,
+                "Type /start to return to the menu.",
+            )
+
+        # ---- MENU callbacks ----
+        elif data == "menu_new":
             await run_in_threadpool(
                 send_telegram_message,
                 chat_id,
