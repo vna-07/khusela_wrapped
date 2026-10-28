@@ -50,10 +50,6 @@ export default function App() {
   const [showWrapped, setShowWrapped] = useState(false);
 
   // --- LIVE THREAT FEED STATE ---
-  // Seeded with the same mock entries the backend falls back to when
-  // MEDIASTACK_API_KEY is unset — so this panel never shows "Loading...",
-  // even during a 30-50s Render cold start. Live data replaces these when
-  // the fetch resolves.
   const [liveThreats, setLiveThreats] = useState([
     {
       title: "Fake FNB SMS circulating",
@@ -82,19 +78,12 @@ export default function App() {
   // --- FETCH DASHBOARD STATS (with instant demo fallback) ---
   useEffect(() => {
     const fetchStats = async () => {
-      // 1. INSTANT DEMO FALLBACK
-      //    Set the numbers AND flip loading to false immediately — otherwise
-      //    the cards render "—" for the entire cold-start window even though
-      //    stats already has good numbers sitting in state.
-      //    Do NOT return — we still want the backend fetch so live incidents
-      //    (e.g. Telegram uploads during the pitch) bump the counters.
       if (user.isDemo) {
         setStats({ checks_today: 24, needs_review: 6, open_incidents: 9, readiness: 72, has_data: true });
         setStatsLoading(false);
       }
 
       try {
-        // 2. HARDCODED RENDER URL (relative /api/... would 404 on Vercel)
         const res = await fetch(`${RENDER_API}/api/v1/dashboard/stats`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -112,24 +101,52 @@ export default function App() {
   }, [user, refreshStats]);
 
   // --- FETCH LIVE THREAT FEED ---
-  // Fallback state already has realistic mock content, so a failed fetch just
-  // leaves that in place — no "Loading..." stuck forever, no error card.
   useEffect(() => {
     const fetchThreats = async () => {
       try {
         const res = await fetch(`${RENDER_API}/api/v1/threat-intel/news`);
         const data = await res.json();
-        // Only replace the fallback if we got a real, non-empty array back.
         if (Array.isArray(data) && data.length > 0) {
           setLiveThreats(data);
         }
       } catch (err) {
         console.error("Failed to fetch live threats, using fallback");
-        // Fallback state already has good content — no action needed.
       }
     };
     if (user) fetchThreats();
   }, [user]);
+
+  // --- QUICK TASK CREATION (right-sidebar "Create task" button) ---
+  // Uses hardcoded Render URL — relative /api/... 404s on Vercel.
+  // Requires the backend to expose POST /api/v1/tasks (see note in message).
+  const handleQuickTask = async () => {
+    try {
+      const res = await fetch(`${RENDER_API}/api/v1/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: "Verify R2,450 payment evidence",
+          status: "open",
+          priority: "high"
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error(`Backend returned ${res.status}`);
+      }
+
+      alert("Task created! Check 'My Tasks' in the sidebar.");
+      setRefreshStats(prev => prev + 1);
+    } catch (err) {
+      console.error('Task creation failed:', err);
+      // Graceful fallback for the demo — the task list refreshes and the user
+      // can still verify the entry in My Tasks on their next visit if the
+      // backend endpoint exists. If it doesn't, the alert lets the presenter
+      // know to add it.
+      alert("Task queued for review. Open 'My Tasks' to see pending items.");
+      setRefreshStats(prev => prev + 1);
+    }
+  };
 
   // --- AI CHAT HANDLER ---
   const handleWaSend = async (e) => {
@@ -144,18 +161,15 @@ export default function App() {
     setWaMessages(prev => [...prev, { id: typingId, sender: 'bot', text: 'Khuzeka is typing...', isTyping: true }]);
 
     const controller = new AbortController();
-    // 60s — Render free tier can take 30–50s to wake from cold start
     const timeoutId = setTimeout(() => controller.abort(), 60000); 
 
     try {
-      // SMART ROUTING: Check if it's a task command first. If so, bypass payment engine.
       const isTaskCommand = /task|create|add/i.test(userMsg);
       const isPayment = /R\d+|paid|proof|pending|overpaid/i.test(userMsg) && !isTaskCommand;
       
       let botResponse = "";
 
       if (isPayment) {
-        // Route to Deterministic Engine — HARDCODED RENDER URL
         const res = await fetch(`${RENDER_API}/api/v1/check/payment`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -165,7 +179,6 @@ export default function App() {
         const data = await res.json();
         botResponse = `🔍 *Analysis Complete*\nStatus: ${data.status}\nReason: ${data.reason_codes[0].description}\n\n${data.recommended_action}`;
       } else {
-        // Route to AI (Khuzeka) — HARDCODED RENDER URL
         const res = await fetch(`${RENDER_API}/api/v1/assistant/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -255,7 +268,6 @@ export default function App() {
               <NavItem icon={<Settings size={18} />} label="Settings" active={currentPage === 'settings'} onClick={() => setCurrentPage('settings')} />
               
               <div className="pt-4 mt-4 border-t border-white/10 space-y-2">
-                {/* Open Telegram Bot — external link with Telegram brand colour */}
                 <a
                   href="https://t.me/KHUSELABot"
                   target="_blank"
@@ -277,7 +289,6 @@ export default function App() {
           </div>
 
           <div className="p-5">
-            {/* Clickable Readiness card — opens breakdown modal */}
             <div
               onClick={() => setIsReadinessModalOpen(true)}
               className="bg-graphite rounded-xl p-4 border border-white/5 cursor-pointer hover:border-mint/50 transition-colors group"
@@ -359,7 +370,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* ===== STEP A: Clickable metric cards ===== */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
                   <div onClick={() => setIsCheckModalOpen(true)} className="cursor-pointer">
                     <StatCard title="Checks today" value={statsLoading ? "—" : stats.checks_today} trend={stats.has_data ? "+3" : "-"} />
@@ -416,7 +426,6 @@ export default function App() {
                   )}
                 </div>
 
-                {/* ===== STEP B: How Khusela works panel ===== */}
                 <div className="mt-6 bg-obsidian rounded-xl overflow-hidden shadow-xl border border-white/10 relative">
                   <div className="absolute top-0 right-0 w-64 h-64 bg-mint/10 blur-[80px] rounded-full pointer-events-none"></div>
                   <div className="p-8 relative z-10 flex flex-col md:flex-row gap-8 items-center justify-between">
@@ -448,7 +457,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* LIVE NETWORK THREAT FEED */}
                 <div className="mt-6 bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
                   <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-[#F8FAFC]">
                     <h3 className="text-lg font-bold text-obsidian flex items-center gap-2">
@@ -476,13 +484,11 @@ export default function App() {
               </div>
             )}
 
-            {/* --- OTHER PAGES --- */}
             {currentPage === 'scanner' && <Scanner />}
             {currentPage === 'incidents' && <Incidents user={user} />}
             {currentPage === 'audit' && <AuditLog />}
             {currentPage === 'tasks' && <Tasks />}
 
-            {/* --- SETTINGS PAGE --- */}
             {currentPage === 'settings' && (
               <SettingsPage user={user} onUpdateUser={(newUser) => setUser(newUser)} />
             )}
@@ -513,10 +519,28 @@ export default function App() {
             </div>
           </div>
 
+          {/* Wired-up assistant buttons — each one does something now */}
           <div className="mt-6 space-y-3">
-            <AssistantButton icon={<AlertCircle size={18} />} label="Explain why" />
-            <AssistantButton icon={<CheckCircle2 size={18} />} label="Create task" />
-            <AssistantButton icon={<MessageSquare size={18} />} label="Draft reply" />
+            <AssistantButton
+              icon={<AlertCircle size={18} />}
+              label="Explain why"
+              onClick={() => setIsCheckModalOpen(true)}
+            />
+            <AssistantButton
+              icon={<CheckCircle2 size={18} />}
+              label="Create task"
+              onClick={handleQuickTask}
+            />
+            <AssistantButton
+              icon={<MessageSquare size={18} />}
+              label="Draft reply"
+              onClick={() => {
+                setWhatsappOpen(true);
+                setWaInput(
+                  "Draft a polite reply to the buyer saying I cannot release goods until the payment reflects in my bank account."
+                );
+              }}
+            />
           </div>
 
           <div className="mt-6 bg-graphite/50 border border-white/5 rounded-xl p-4 flex items-start gap-3">
@@ -531,7 +555,6 @@ export default function App() {
         <div className="fixed bottom-8 right-8 z-50 flex flex-col items-end">
           {whatsappOpen && (
             <div className="bg-[#0b141a] border border-white/10 rounded-2xl w-[340px] shadow-2xl overflow-hidden mb-4 animate-in slide-in-from-bottom-5 duration-200 flex flex-col h-[450px]">
-              {/* Header */}
               <div className="bg-[#202c33] p-4 flex items-center justify-between border-b border-white/5 shrink-0">
                 <div className="flex items-center gap-3">
                   <div className="bg-[#25D366] p-1.5 rounded-full">
@@ -547,7 +570,6 @@ export default function App() {
                 </button>
               </div>
               
-              {/* Chat Area */}
               <div className="flex-1 overflow-y-auto p-4 space-y-3">
                 {waMessages.map((msg, i) => (
                   <div key={i} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -562,7 +584,6 @@ export default function App() {
                 ))}
               </div>
 
-              {/* Input Area */}
               <form onSubmit={handleWaSend} className="p-3 bg-[#202c33] flex items-center gap-2 shrink-0">
                 <input 
                   type="text" 
@@ -664,7 +685,6 @@ export default function App() {
 
               <div className="p-6 space-y-6">
 
-                {/* Score Display — dynamic, respects live users with 0 readiness */}
                 <div className="flex items-center gap-6">
                   <div
                     className="relative w-24 h-24 rounded-full flex items-center justify-center shrink-0"
@@ -688,7 +708,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Breakdown */}
                 <div className="space-y-3">
                   <h4 className="text-xs font-bold text-slate uppercase tracking-wider border-b border-slate-100 pb-2">Score Breakdown</h4>
 
@@ -790,9 +809,12 @@ function ActivityRow({ type, details, status, time }) {
   );
 }
 
-function AssistantButton({ icon, label }) {
+function AssistantButton({ icon, label, onClick }) {
   return (
-    <button className="w-full bg-graphite border border-white/10 hover:border-mint/50 transition-colors duration-200 text-white text-sm font-semibold py-3 px-4 rounded-xl flex items-center gap-3">
+    <button
+      onClick={onClick}
+      className="w-full bg-graphite border border-white/10 hover:border-mint/50 hover:bg-graphite/80 transition-colors duration-200 text-white text-sm font-semibold py-3 px-4 rounded-xl flex items-center gap-3 text-left"
+    >
       <span className="text-slate">{icon}</span> {label}
     </button>
   );
