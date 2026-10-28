@@ -63,9 +63,9 @@ export default function App() {
   useEffect(() => {
     const fetchStats = async () => {
       // 1. INSTANT DEMO FALLBACK (Shows up even if backend is dead)
-      // Numbers match backend's seeded DEMO_INCIDENTS + dashboard response.
+      // Numbers match backend's seeded DEMO_INCIDENTS (9 cases, 6 in WAIT/STOP).
       if (user.isDemo) {
-        setStats({ checks_today: 24, needs_review: 5, open_incidents: 8, readiness: 72, has_data: true });
+        setStats({ checks_today: 24, needs_review: 6, open_incidents: 9, readiness: 72, has_data: true });
       }
 
       try {
@@ -209,7 +209,18 @@ export default function App() {
               <NavItem icon={<CheckCircle2 size={18} />} label="My Tasks" active={currentPage === 'tasks'} onClick={() => setCurrentPage('tasks')} />
               <NavItem icon={<Settings size={18} />} label="Settings" active={currentPage === 'settings'} onClick={() => setCurrentPage('settings')} />
               
-              <div className="pt-4 mt-4 border-t border-white/10">
+              <div className="pt-4 mt-4 border-t border-white/10 space-y-2">
+                {/* Open Telegram Bot — external link with Telegram brand colour */}
+                <a
+                  href="https://t.me/KHUSELABot"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-bold text-[#229ED9] hover:text-white bg-[#229ED9]/10 hover:bg-[#229ED9]/20 transition-all"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+                  Open Telegram Bot
+                </a>
+                
                 <button 
                   onClick={() => setCurrentPage('admin')}
                   className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-xs font-bold text-slate hover:text-mint hover:bg-graphite/50 transition-all"
