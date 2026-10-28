@@ -52,7 +52,7 @@ export default function App() {
     const fetchStats = async () => {
       setStatsLoading(true);
       try {
-        const res = await fetch('http://localhost:8000/api/v1/dashboard/stats', {
+        const res = await fetch('import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/dashboard/stats', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_demo: Boolean(user.isDemo) })
@@ -92,7 +92,7 @@ export default function App() {
 
       if (isPayment) {
         // Route to Deterministic Engine
-        const res = await fetch('http://localhost:8000/api/v1/check/payment', {
+        const res = await fetch('import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/check/payment', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text_input: userMsg }),
@@ -102,7 +102,7 @@ export default function App() {
         botResponse = `🔍 *Analysis Complete*\nStatus: ${data.status}\nReason: ${data.reason_codes[0].description}\n\n${data.recommended_action}`;
       } else {
         // Route to AI (Khuzeka)
-        const res = await fetch('http://localhost:8000/api/v1/assistant/chat', {
+        const res = await fetch('import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/assistant/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 

@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSaved }) {
   const [inputText, setInputText] = useState('');
@@ -18,6 +19,14 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
   const [aiLoading, setAiLoading] = useState(false);
   const [isRecovery, setIsRecovery] = useState(false);
 
+  // ===== P0.3: Network Alert state =====
+  const [networkAlert, setNetworkAlert] = useState(null);
+
+  // ===== P0.4: Reassessment state =====
+  const [followUp, setFollowUp] = useState('');
+  const [reassessLoading, setReassessLoading] = useState(false);
+  const [reassessError, setReassessError] = useState(null);
+
   if (!isOpen) return null;
 
   const resetAll = () => {
@@ -28,6 +37,10 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
     setVerdict(null);
     setAiExplanation(null);
     setIsRecovery(false);
+    setNetworkAlert(null);       // P0.3
+    setFollowUp('');             // P0.4
+    setReassessLoading(false);   // P0.4
+    setReassessError(null);      // P0.4
   };
 
   const handleClose = () => {
@@ -57,6 +70,9 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
     setExtractedText('');
     setErrorMessage(null);
     setIsRecovery(false);
+    setNetworkAlert(null);
+    setFollowUp('');
+    setReassessError(null);
 
     try {
       let endpoint;
@@ -64,12 +80,12 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
       let headers;
 
       if (selectedFile) {
-        endpoint = 'http://localhost:8000/api/v1/check/image';
+        endpoint = `${API_BASE}/api/v1/check/image`;
         body = new FormData();
         body.append('file', selectedFile);
-        headers = {}; // fetch sets multipart boundary automatically
+        headers = {};
       } else {
-        endpoint = 'http://localhost:8000/api/v1/check/payment';
+        endpoint = `${API_BASE}/api/v1/check/payment`;
         body = JSON.stringify({
           text_input: inputText || 'Payment is pending. Please release goods.',
         });
@@ -82,14 +98,19 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
       if (data?.error) {
         setErrorMessage(data.error);
       } else if (selectedFile) {
-        // OCR response shape: { extracted_text, verdict }
         setExtractedText(data.extracted_text || '');
         setVerdict(data.verdict || null);
+        if (data.network_alert) {
+          setNetworkAlert(data.network_context || 'Network alert triggered.');
+        } else {
+          setNetworkAlert(null);
+        }
         if (!data.verdict) {
           setErrorMessage('The engine did not return a verdict for this image.');
         }
       } else {
         setVerdict(data);
+        setNetworkAlert(null);
       }
     } catch (err) {
       console.error('Backend not running?', err);
@@ -98,10 +119,42 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
     setLoading(false);
   };
 
+  // ===== P0.4: Reassessment handler =====
+  const handleReassess = async () => {
+    if (!followUp.trim()) return;
+    setReassessLoading(true);
+    setReassessError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/check/reassess`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current_verdict: verdict,
+          user_answer: followUp,
+        }),
+      });
+      const data = await res.json();
+      if (data?.error) {
+        setReassessError(data.error);
+      } else {
+        setVerdict(data);
+        setFollowUp('');
+        // Manual verification overrides the network signal
+        if (data.status === 'MATCH') {
+          setNetworkAlert(null);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      setReassessError('Could not reach the security engine for reassessment.');
+    }
+    setReassessLoading(false);
+  };
+
   const askKhuzeka = async () => {
     setAiLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/api/v1/assistant/explain', {
+      const res = await fetch(`${API_BASE}/api/v1/assistant/explain`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ verdict }),
@@ -119,18 +172,18 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
 
   const saveIncident = async () => {
     try {
-      await fetch('http://localhost:8000/api/v1/incidents', {
+      await fetch(`${API_BASE}/api/v1/incidents`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: 'Payment Check Flagged',
+          title: networkAlert ? 'Network-Flagged Payment' : 'Payment Check Flagged',
           description: `Verdict: ${verdict.status} · ${verdict.reason_codes[0].description}`,
           status: verdict.status,
           is_demo: user.isDemo,
         }),
       });
 
-      onIncidentSaved?.(); // Tell App.jsx to refresh the dashboard stats
+      onIncidentSaved?.();
       resetAll();
       onClose();
     } catch (err) {
@@ -142,8 +195,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
   const downloadEvidenceReport = () => {
     if (!verdict) return;
     const stamp = new Date().toISOString();
-    // Prefer the OCR-extracted text (what the engine actually analysed),
-    // then fall back to typed input.
     const evidenceSource = (extractedText || inputText || '').trim();
 
     const lines = [
@@ -154,6 +205,9 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
       `Source:           ${selectedFile ? `Image upload (${selectedFile.name})` : 'Text input'}`,
       `Verdict status:   ${verdict.status}`,
       `Recommended:      ${verdict.recommended_action}`,
+      ...(networkAlert
+        ? ['', 'NETWORK ALERT:', '--------------', networkAlert]
+        : []),
       '',
       'Evidence submitted:',
       '-------------------',
@@ -181,13 +235,15 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
   };
 
   const getStatusIcon = (status) => {
-    if (status === 'STOP') return <ShieldAlert className="text-stop" size={32} />;
+    if (status === 'STOP' || status === 'ESCALATE')
+      return <ShieldAlert className="text-stop" size={32} />;
     if (status === 'WAIT') return <Clock className="text-wait" size={32} />;
     return <ShieldCheck className="text-mint-dark" size={32} />;
   };
 
   const getStatusColor = (status) => {
-    if (status === 'STOP') return 'border-stop/20 bg-[#FEE2E2]/50 text-stop';
+    if (status === 'STOP' || status === 'ESCALATE')
+      return 'border-stop/20 bg-[#FEE2E2]/50 text-stop';
     if (status === 'WAIT') return 'border-wait/20 bg-[#FEF3C7]/50 text-wait';
     return 'border-mint-dark/20 bg-[#D1FAE5]/50 text-mint-dark';
   };
@@ -211,7 +267,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
         <div className="p-6">
           {!verdict ? (
             <>
-              {/* ================= FILE DROPZONE ================= */}
               <div
                 className="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center hover:border-mint-dark hover:bg-[#F8FAFC] transition-colors cursor-pointer mb-4"
                 onClick={() => document.getElementById('file-upload').click()}
@@ -256,7 +311,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 value={inputText}
                 onChange={(e) => {
                   setInputText(e.target.value);
-                  // Typing clears a previously selected file to avoid ambiguity
                   if (e.target.value && selectedFile) setSelectedFile(null);
                 }}
                 placeholder="e.g. 'Hi, I have paid the R2450. Here is the confirmation, please release the sneakers.'"
@@ -286,6 +340,14 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
             </>
           ) : (
             <div className="space-y-4">
+              {/* ===== P0.3: NETWORK ALERT BANNER ===== */}
+              {networkAlert && (
+                <div className="bg-red-500/10 border-2 border-red-500 text-red-600 p-4 rounded-xl font-bold flex items-start gap-3 animate-pulse">
+                  <ShieldAlert size={24} className="shrink-0 mt-0.5" />
+                  <div className="text-sm leading-relaxed">{networkAlert}</div>
+                </div>
+              )}
+
               <div
                 className={`p-4 rounded-xl border flex items-center gap-4 ${getStatusColor(
                   verdict.status
@@ -298,7 +360,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 </div>
               </div>
 
-              {/* What the engine actually read (OCR only) */}
               {extractedText && (
                 <div className="bg-[#F8FAFC] rounded-xl p-4 border border-slate-200">
                   <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-3">
@@ -330,6 +391,46 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                   ))}
                 </ul>
               </div>
+
+              {/* ===== P0.4: FOLLOW-UP & REASSESSMENT ===== */}
+              {verdict.status !== 'MATCH' && (
+                <div className="p-4 border border-slate-200 rounded-xl bg-slate-50">
+                  <label className="block text-sm font-bold text-obsidian mb-2">
+                    Khuzeka asks: Did you check your available balance in your banking app?
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={followUp}
+                      onChange={(e) => setFollowUp(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && followUp.trim() && !reassessLoading) {
+                          handleReassess();
+                        }
+                      }}
+                      placeholder="e.g., Yes, I checked, it is cleared."
+                      className="flex-1 bg-white border border-slate-300 rounded-lg p-2 text-sm focus:outline-none focus:border-mint-dark"
+                    />
+                    <button
+                      onClick={handleReassess}
+                      disabled={reassessLoading || !followUp.trim()}
+                      className="bg-obsidian text-white font-bold px-4 rounded-lg hover:bg-graphite disabled:opacity-50 flex items-center gap-2"
+                    >
+                      {reassessLoading ? (
+                        <>
+                          <Loader2 size={14} className="animate-spin" />
+                          …
+                        </>
+                      ) : (
+                        'Submit'
+                      )}
+                    </button>
+                  </div>
+                  {reassessError && (
+                    <p className="text-xs text-stop mt-2">{reassessError}</p>
+                  )}
+                </div>
+              )}
 
               <div className="mt-4 p-4 bg-obsidian rounded-xl border border-white/10">
                 <div className="flex items-center gap-2 mb-3">
@@ -402,7 +503,7 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 </div>
               )}
 
-              {/* ================= SAVE / DISCARD ACTIONS ================= */}
+              {/* ================= SAVE / DISCARD ================= */}
               <div className="flex gap-3 mt-4">
                 <button
                   type="button"

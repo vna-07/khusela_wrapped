@@ -10,7 +10,7 @@ export default function AuditLog({ user }) {
     const fetchLogs = async () => {
       try {
         const isDemo = Boolean(user?.isDemo);
-        const res = await fetch(`http://localhost:8000/api/v1/audit-logs?is_demo=${isDemo}`);
+        const res = await fetch(`import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/audit-logs?is_demo=${isDemo}`);
         const data = await res.json();
         setLogs(data);
       } catch (err) {

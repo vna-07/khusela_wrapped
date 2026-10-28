@@ -2,7 +2,7 @@ import requests
 import json
 import time
 
-URL = "http://localhost:8000/api/v1/webhooks/whatsapp"
+URL = "import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/webhooks/whatsapp"
 
 def send_whatsapp_message(phone, text):
     payload = {

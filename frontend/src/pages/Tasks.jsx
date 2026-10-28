@@ -15,7 +15,7 @@ export default function Tasks() {
     const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 seconds
 
     try {
-      const res = await fetch('http://localhost:8000/api/v1/tasks', { signal: controller.signal });
+      const res = await fetch('import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/tasks', { signal: controller.signal });
       if (!res.ok) throw new Error("Backend returned an error");
       const data = await res.json();
       setTasks(data);
@@ -39,7 +39,7 @@ export default function Tasks() {
   const completeTask = async (taskId) => {
     try {
       setTasks(tasks.map(t => t.id === taskId ? { ...t, status: 'done' } : t));
-      await fetch(`http://localhost:8000/api/v1/tasks/${taskId}/complete`, { method: 'POST' });
+      await fetch(`import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/tasks/${taskId}/complete`, { method: 'POST' });
     } catch (err) {
       console.error(err);
       fetchTasks(); // Revert on failure

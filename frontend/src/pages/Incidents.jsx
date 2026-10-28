@@ -9,7 +9,7 @@ export default function Incidents({ user }) {
     const fetchIncidents = async () => {
       try {
         const isDemo = Boolean(user?.isDemo);
-        const res = await fetch(`http://localhost:8000/api/v1/incidents?is_demo=${isDemo}`);
+        const res = await fetch(`import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/incidents?is_demo=${isDemo}`);
         const data = await res.json();
         setIncidents(data);
       } catch (err) {
@@ -23,7 +23,7 @@ export default function Incidents({ user }) {
   const downloadReport = async (incidentId) => {
     try {
       const isDemo = Boolean(user?.isDemo);
-      const res = await fetch(`http://localhost:8000/api/v1/incidents/${incidentId}/report?is_demo=${isDemo}`);
+      const res = await fetch(`import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/incidents/${incidentId}/report?is_demo=${isDemo}`);
       if (!res.ok) throw new Error("Failed to generate report");
       
       const blob = await res.blob();
