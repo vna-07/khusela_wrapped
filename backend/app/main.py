@@ -4,6 +4,8 @@ from pydantic import BaseModel
 from xml.sax.saxutils import escape
 import re
 import io
+import os
+import requests
 import pytesseract
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
@@ -566,3 +568,88 @@ async def verify_whatsapp_webhook(
 @app.get("/api/v1/audit-logs")
 async def fetch_audit_logs(is_demo: bool = Query(False)):
     return get_audit_logs(is_demo)
+
+# ================= TELEGRAM BOT =================
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+
+def send_telegram_message(chat_id: int, text: str, parse_mode: str = None):
+    """Send a message to a Telegram chat. Runs in a threadpool from async callers."""
+    if not TELEGRAM_TOKEN:
+        print("No Telegram token configured.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    try:
+        r = requests.post(url, json=payload, timeout=5)
+        # Telegram returns 400 when Markdown is malformed — retry as plain text
+        if r.status_code == 400 and parse_mode:
+            payload.pop("parse_mode", None)
+            requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        print(f"Failed to send Telegram message: {e}")
+
+
+@app.post("/api/v1/webhooks/telegram")
+async def receive_telegram_message(request: Request):
+    payload = await request.json()
+
+    if "message" not in payload:
+        return {"status": "no_message"}
+
+    message = payload["message"]
+    chat_id = message["chat"]["id"]
+    sender_name = message["chat"].get("first_name", "User")
+
+    # Handle Text Messages
+    if "text" in message:
+        text = message["text"]
+
+        # Log to Audit Trail
+        add_audit_log(
+            channel="Telegram",
+            sender=sender_name,
+            event_type="Message Scan",
+            description=f"Received: '{text[:30]}...'",
+            context="Telegram Bot Integration",
+            status="success",
+            is_demo=False,
+        )
+
+        # Smart Routing (Same as Web)
+        is_payment = any(
+            w in text.lower()
+            for w in ["r2450", "paid", "proof", "pending", "overpaid"]
+        )
+
+        if is_payment:
+            verdict = evaluate_payment_proof(text, "tg_hash_123")
+            reason = (
+                verdict.reason_codes[0].description
+                if verdict.reason_codes
+                else "No specific reason recorded."
+            )
+            reply_text = (
+                f"🔍 *Analysis Complete*\n"
+                f"Status: {verdict.status}\n"
+                f"Reason: {reason}\n\n"
+                f"{verdict.recommended_action}"
+            )
+            await run_in_threadpool(
+                send_telegram_message, chat_id, reply_text, "Markdown"
+            )
+        else:
+            # Route to Khuzeka AI — await directly; do NOT call asyncio.run()
+            system_prompt = (
+                "Role: You are Khuzeka, an empathetic, sharp AI security assistant "
+                "for South African business owners. Keep answers short. Your ONLY "
+                "focus is business security and fraud prevention."
+            )
+            ai_response = await generate_ai_response(system_prompt, text)
+            # No parse_mode — AI text can contain characters that break Markdown
+            await run_in_threadpool(send_telegram_message, chat_id, ai_response)
+
+    return {"status": "success"}
