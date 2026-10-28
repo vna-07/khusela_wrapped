@@ -6,6 +6,7 @@ import re
 import io
 import os
 import json
+import time
 import asyncio
 import tempfile
 import requests
@@ -21,9 +22,6 @@ from app.db.sqlite_store import add_audit_log, get_audit_logs, get_sast_time
 from app.reports.incident_pdf import generate_incident_pdf
 
 # --- TESSERACT BINARY PATH ---
-# Windows dev machines need an explicit path; Linux (Render / Docker) resolves
-# `tesseract` from PATH automatically. Guarding with os.name avoids the
-# "C:\... is not installed" error on Linux deploys.
 if os.name == "nt":  # Windows only
     _win_tess = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     if os.path.exists(_win_tess):
@@ -33,27 +31,19 @@ app = FastAPI(title="Khusela Core")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # Vercel URL, localhost, etc. — open for hackathon
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ================= P0.3: NETWORK FINGERPRINTS =================
-# In production this is a shared table populated by every seller's scans
-# (use imagehash.pHash + Hamming distance, not byte-length).
-# For the hackathon we map a mock file-hash -> human-readable alert.
-# NOTE: with `file_hash = str(len(image_bytes))` this dict never actually matches —
-# it is documentary. The live demo trigger is the text heuristic in check_image().
 NETWORK_FINGERPRINTS = {
     "demo_fake_receipt_hash": "Flagged by 3 other sellers in Makhanda",
     "another_fake_hash": "Flagged by 2 sellers in Cape Town",
 }
 
 # ================= SEEDED DEMO INCIDENTS =================
-# Shown only when the frontend asks for is_demo=true (Judge / Try Demo flow).
-# These are NOT in INCIDENTS — the live store remains empty until a real
-# user (or a demo user via "Save to Incident Centre") creates one.
 DEMO_INCIDENTS = [
     {"id": "KZ-DEMO-1001", "title": "Payment confirmation", "description": "R8,500 payment slip, invoice, and bank extract. Reference and amount don't agree.", "status": "WAIT", "date": "Today, 09:42"},
     {"id": "KZ-DEMO-1002", "title": "Statement reconciliation", "description": "Duplicate entry and balance discrepancy in sales ledger.", "status": "STOP", "date": "Yesterday, 14:15"},
@@ -107,23 +97,26 @@ TASKS = [
 
 INCIDENTS = []
 
-# In-memory WhatsApp session tracker (use Redis or SQLite in production)
 WA_SESSIONS = {}
+
+# Threat intel cache — see THREAT INTELLIGENCE section below for the endpoint.
+# Using time.monotonic() (immune to NTP jumps) instead of time.time().
+THREAT_CACHE = {
+    "data": [],
+    "last_updated": 0.0,
+}
 
 _MAX_CONTEXT_CHARS = 2000
 
 # ================= HELPERS =================
 
 def _twiml(message: str) -> Response:
-    """Wrap a text reply in TwiML, escaping XML metacharacters."""
     return Response(
         content=f"<Response><Message>{escape(message)}</Message></Response>",
         media_type="application/xml",
     )
 
 def _force_stop(verdict):
-    """Legacy helper — kept for backward compat. Sets status to STOP
-    regardless of object type (dict or Pydantic model)."""
     try:
         verdict.status = "STOP"
     except Exception:
@@ -134,8 +127,6 @@ def _force_stop(verdict):
     return verdict
 
 def _needs_review(status):
-    """Statuses that count toward the 'needs review' metric — includes both the
-    original deterministic-engine statuses AND the investigator's verdicts."""
     return status in (
         "STOP", "WAIT", "ESCALATE",
         "REVIEW REQUIRED", "UNVERIFIED",
@@ -143,33 +134,21 @@ def _needs_review(status):
     )
 
 def _call_investigator(text: str, ai_insights=None):
-    """Call investigate_document tolerantly — supports both one-arg (legacy)
-    and two-arg (ai_insights-aware) signatures."""
     if ai_insights is None:
         return investigate_document(text)
     try:
         return investigate_document(text, ai_insights)
     except TypeError:
-        # Legacy investigator.py without ai_insights parameter
         return investigate_document(text)
 
 def _normalize_verdict(investigation: dict) -> dict:
-    """
-    Adapter between the investigator contract and the legacy payment-verdict
-    shape that App.jsx's WhatsApp widget still reads (`reason_codes[0].description`
-    and `recommended_action`).
-
-    Returns BOTH shapes so no consumer crashes:
-    - New consumers read: status, reason, finding, verification, action
-    - Legacy consumers read: reason_codes, recommended_action
-    """
     status = investigation.get("status", "INSUFFICIENT EVIDENCE")
     reason = investigation.get("reason", "No specific reason recorded.")
     action = investigation.get("action", "")
     severity = "high" if _needs_review(status) else "low"
 
     return {
-        **investigation,  # keep status/reason/finding/verification/action
+        **investigation,
         "reason_codes": [
             {"code": "INV_001", "description": reason, "severity": severity}
         ],
@@ -285,10 +264,6 @@ async def download_incident_report(incident_id: str, is_demo: bool = False):
     )
 
 # ================= PAYMENT ENGINE =================
-# Routed through the universal investigator so TEXT input goes through the same
-# classification pipeline as document uploads. Response is normalized to ALSO
-# carry legacy `reason_codes` / `recommended_action` fields so App.jsx's
-# WhatsApp widget and any older consumers keep working.
 
 @app.post("/api/v1/check/payment")
 async def check_payment(req: CheckRequest):
@@ -298,15 +273,11 @@ async def check_payment(req: CheckRequest):
     return _normalize_verdict(investigation)
 
 # ================= IMAGE + NETWORK ALERT (P0.3) =================
-# Uses the investigator for classification, PLUS keeps the network-alert
-# fingerprint + text heuristic so the P0.3 demo moment still fires.
 
 @app.post("/api/v1/check/image")
 async def check_image(file: UploadFile = File(...)):
     try:
         image_bytes = await file.read()
-
-        # MOCK HASHING — in production use imagehash.pHash
         file_hash = str(len(image_bytes))
 
         image = Image.open(io.BytesIO(image_bytes))
@@ -315,24 +286,19 @@ async def check_image(file: UploadFile = File(...)):
         if not extracted_text.strip():
             return {"error": "Could not extract readable text from this image."}
 
-        # Universal investigator — handles payments, invoices, certificates, etc.
         investigation = await run_in_threadpool(
             _call_investigator, extracted_text, None
         )
 
-        # --- P0.3 NETWORK ALERT (independent of investigator) ---
         network_alert = False
         network_context = ""
 
-        # Path A: exact fingerprint hit (production path — decorative here)
         if file_hash in NETWORK_FINGERPRINTS:
             network_alert = True
             network_context = (
                 f"⚠️ NETWORK ALERT: {NETWORK_FINGERPRINTS[file_hash]}. "
                 f"Do not release goods."
             )
-
-        # Path B: demo heuristic — keeps the hackathon demo firing reliably
         elif "pending" in extracted_text.lower() or "R2450" in extracted_text:
             network_alert = True
             network_context = (
@@ -340,9 +306,8 @@ async def check_image(file: UploadFile = File(...)):
                 "sellers in your area. Do not release goods."
             )
 
-        # Network signal overrides a "consistent" investigator verdict
         if network_alert:
-            investigation = dict(investigation)  # copy, don't mutate
+            investigation = dict(investigation)
             if investigation.get("status") not in ("STOP", "SUSPICIOUS", "ESCALATE"):
                 investigation["status"] = "SUSPICIOUS"
                 investigation["reason"] = (
@@ -350,8 +315,6 @@ async def check_image(file: UploadFile = File(...)):
                     + investigation.get("reason", "manual review required.")
                 )
 
-        # Normalize so the modal, WhatsApp widget, and any legacy consumer
-        # all get the fields they expect.
         normalized = _normalize_verdict(investigation)
 
         add_audit_log(
@@ -375,7 +338,7 @@ async def check_image(file: UploadFile = File(...)):
 
         return {
             "extracted_text": extracted_text,
-            "verdict": normalized,   # normalized: investigator + legacy alias fields
+            "verdict": normalized,
             "network_alert": network_alert,
             "network_context": network_context,
         }
@@ -472,7 +435,7 @@ async def general_chat(req: ChatRequest):
     response = await generate_ai_response(system_prompt, user_prompt)
     return {"response": response}
 
-# ================= AI DOCUMENT ANALYSIS (Structured Insights) =================
+# ================= AI DOCUMENT ANALYSIS =================
 
 @app.post("/api/v1/analyze/document")
 async def analyze_document(req: DocumentAnalyzeRequest):
@@ -507,6 +470,95 @@ async def analyze_document(req: DocumentAnalyzeRequest):
         return {"status": "success", "insights": ai_insights}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+# ================= THREAT INTELLIGENCE (Live News) =================
+# Fetches South African scam/fraud news from Mediastack, caches for 1 hour.
+# Falls back to mock data if MEDIASTACK_API_KEY is not set OR the API fails.
+# Set MEDIASTACK_API_KEY on Render to enable live news; the free tier allows
+# 500 requests/month (well within our 1-hour cache + demo usage).
+#
+# Response shape: ALWAYS a list of {title, description, source, time}.
+# Frontend maps over it directly.
+
+@app.get("/api/v1/threat-intel/news")
+async def get_live_threats():
+    current_time = time.monotonic()
+
+    # Cache hit — return within the hour, only if we have real data.
+    if (
+        current_time - THREAT_CACHE["last_updated"] < 3600
+        and THREAT_CACHE["data"]
+    ):
+        return THREAT_CACHE["data"]
+
+    api_key = os.getenv("MEDIASTACK_API_KEY")
+    if not api_key:
+        # No key configured — judges get a stable demo feed, not an error.
+        return [
+            {
+                "title": "Fake FNB SMS circulating",
+                "description": "Sellers are receiving SMS messages asking to verify your account.",
+                "source": "System Alert",
+                "time": "2 hours ago",
+            },
+            {
+                "title": "Overpayment Scam on Facebook",
+                "description": "Buyer sends fake POP for R5,000 instead of R500.",
+                "source": "System Alert",
+                "time": "5 hours ago",
+            },
+        ]
+
+    try:
+        # HTTPS (not HTTP) — some networks reject plain HTTP to external APIs,
+        # and Render occasionally redirects, which requests.get would follow
+        # silently but with an extra round-trip.
+        url = (
+            "https://api.mediastack.com/v1/news"
+            f"?access_key={api_key}"
+            "&keywords=South Africa scam,fraud"
+            "&languages=en"
+            "&limit=3"
+            "&sort=published_desc"
+        )
+
+        # Wrap the blocking HTTP call in a threadpool so the event loop
+        # isn't frozen for up to 5s while Mediastack responds.
+        response = await run_in_threadpool(
+            lambda: requests.get(url, timeout=5)
+        )
+        data = response.json()
+
+        if "data" in data and len(data["data"]) > 0:
+            threats = []
+            for article in data["data"]:
+                threats.append({
+                    "title": article.get("title", "Scam Alert"),
+                    "description": article.get("description", "No description available."),
+                    "source": article.get("source", "News"),
+                    "time": (article.get("published_at", "") or "")[:10],
+                })
+
+            # Update cache
+            THREAT_CACHE["data"] = threats
+            THREAT_CACHE["last_updated"] = current_time
+            return threats
+
+    except Exception as e:
+        print(f"Mediastack API Error: {e}")
+
+    # API failed — prefer stale cache if we have it, else mock.
+    if THREAT_CACHE["data"]:
+        return THREAT_CACHE["data"]
+
+    return [
+        {
+            "title": "Fake FNB SMS circulating",
+            "description": "Sellers are receiving SMS messages asking to verify your account.",
+            "source": "System Alert",
+            "time": "Recently",
+        }
+    ]
 
 # ================= TASK MANAGEMENT =================
 
@@ -548,7 +600,7 @@ async def reassess_payment(req: ReassessRequest):
 
     return verdict
 
-# ================= WHATSAPP WEBHOOK (TWILIO) — STATE MACHINE =================
+# ================= WHATSAPP WEBHOOK (TWILIO) =================
 
 @app.post("/api/v1/webhooks/whatsapp")
 async def receive_whatsapp_message(
@@ -569,7 +621,6 @@ async def receive_whatsapp_message(
 
     session = WA_SESSIONS[phone]
 
-    # --- State: AWAITING_NAME ---
     if session["state"] == "AWAITING_NAME":
         session["name"] = text
         session["state"] = "AWAITING_PASSCODE"
@@ -578,7 +629,6 @@ async def receive_whatsapp_message(
             "(Demo passcode: 1234)"
         )
 
-    # --- State: AWAITING_PASSCODE ---
     if session["state"] == "AWAITING_PASSCODE":
         if text == "1234":
             session["state"] = "AUTHENTICATED"
@@ -595,7 +645,6 @@ async def receive_whatsapp_message(
             return _twiml(menu)
         return _twiml("❌ Incorrect passcode. Please try again.")
 
-    # --- State: AUTHENTICATED (main menu) ---
     if session["state"] == "AUTHENTICATED":
         if text == "1":
             session["state"] = "AWAITING_PAYMENT_PROOF"
@@ -630,7 +679,6 @@ async def receive_whatsapp_message(
             )
         return _twiml("Please reply with a number (1–5) or 'menu'.")
 
-    # --- State: AWAITING_PAYMENT_PROOF ---
     if session["state"] == "AWAITING_PAYMENT_PROOF":
         investigation = _call_investigator(text, None)
         normalized = _normalize_verdict(investigation)
@@ -652,7 +700,6 @@ async def receive_whatsapp_message(
             f"🔍 Verdict: {normalized['status']}\n{reason}\n\nReply 'menu' to return."
         )
 
-    # --- State: AWAITING_MESSAGE_SCAN ---
     if session["state"] == "AWAITING_MESSAGE_SCAN":
         text_lower = text.lower()
         is_phishing = any(
@@ -705,7 +752,6 @@ TELEGRAM_PROCESSED_MSGS = set()
 
 
 def send_telegram_message(chat_id: int, text: str, reply_markup=None, parse_mode=None):
-    """Send a message to a Telegram chat. Blocking — run in threadpool from async callers."""
     if not TELEGRAM_TOKEN:
         print("No Telegram token configured.")
         return
@@ -725,7 +771,6 @@ def send_telegram_message(chat_id: int, text: str, reply_markup=None, parse_mode
 
 
 def send_telegram_document(chat_id: int, file_path: str, caption: str):
-    """Send a document (PDF, etc.) to a Telegram chat. Blocking — run in threadpool."""
     if not TELEGRAM_TOKEN:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
@@ -742,7 +787,6 @@ def send_telegram_document(chat_id: int, file_path: str, caption: str):
 
 
 def download_telegram_file(file_id: str, save_path: str) -> bool:
-    """Download a file from Telegram's servers. Blocking — run in threadpool."""
     if not TELEGRAM_TOKEN:
         return False
     try:
@@ -768,7 +812,6 @@ def download_telegram_file(file_id: str, save_path: str) -> bool:
 
 
 def get_telegram_menu():
-    """Structured Telegram inline keyboard — the 'Khuzeka Intelligence' layout."""
     return {
         "inline_keyboard": [
             [{"text": "🔎 New Investigation", "callback_data": "menu_new"}],
@@ -786,7 +829,6 @@ def get_telegram_menu():
 
 
 def _answer_callback(callback_id: str):
-    """Remove the loading spinner on a Telegram inline button. Blocking — run in threadpool."""
     if not TELEGRAM_TOKEN:
         return
     try:
@@ -814,7 +856,6 @@ async def receive_telegram_message(request: Request):
         chat_id = message["chat"]["id"]
         sender_name = message["chat"].get("first_name", "User")
 
-        # 1. HANDLE TEXT MESSAGES
         if "text" in message:
             text = message["text"]
 
@@ -859,13 +900,11 @@ async def receive_telegram_message(request: Request):
                 )
                 return {"status": "success"}
 
-            # SMART ROUTING — payment check vs free-form AI
             is_payment = any(
                 w in text.lower()
                 for w in ["r2450", "paid", "proof", "pending", "overpaid"]
             )
             if is_payment:
-                # Route through investigator + normalize (matches web + WhatsApp)
                 investigation = await run_in_threadpool(
                     _call_investigator, text, None
                 )
@@ -888,7 +927,6 @@ async def receive_telegram_message(request: Request):
                 ai_response = await generate_ai_response(system_prompt, text)
                 await run_in_threadpool(send_telegram_message, chat_id, ai_response)
 
-        # 2. HANDLE FILE UPLOADS (Images / Photos / Documents)
         elif "document" in message or "photo" in message:
             if "document" in message:
                 file_id = message["document"]["file_id"]
@@ -946,7 +984,6 @@ async def receive_telegram_message(request: Request):
                     )
                     return {"status": "success"}
 
-                # 2. OPTIONAL AI INSIGHTS — fail gracefully, 10s cap
                 ai_insights = None
                 if len(extracted_text.strip()) >= 30:
                     try:
@@ -965,12 +1002,10 @@ async def receive_telegram_message(request: Request):
                     except (asyncio.TimeoutError, Exception):
                         ai_insights = None
 
-                # 3. DETERMINISTIC INVESTIGATION
                 investigation = await run_in_threadpool(
                     _call_investigator, extracted_text, ai_insights
                 )
 
-                # 4. Format reply
                 reply_text = (
                     f"📄 *Document Analysis*\n\n"
                     f"*Status:* {investigation['status']}\n"
@@ -987,7 +1022,6 @@ async def receive_telegram_message(request: Request):
                     send_telegram_message, chat_id, reply_text, None, "Markdown"
                 )
 
-                # 5. Generate PDF
                 incident_data = {
                     "id": f"TG-{msg_id}",
                     "title": f"{investigation['status']} Document",
@@ -1011,7 +1045,6 @@ async def receive_telegram_message(request: Request):
                     "Here is your Khusela Investigation Report. It includes a document hash for integrity verification.",
                 )
 
-                # 6. Cross-Channel Magic
                 new_incident = {
                     "id": f"TG-{msg_id}",
                     "title": incident_data["title"],

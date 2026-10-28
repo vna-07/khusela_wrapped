@@ -49,6 +49,19 @@ export default function App() {
   // --- WRAPPED SUMMARY MODAL ---
   const [showWrapped, setShowWrapped] = useState(false);
 
+  // --- LIVE THREAT FEED STATE ---
+  // Placeholder shows while the backend responds (or during cold-start wake).
+  // Backend has a mock fallback when MEDIASTACK_API_KEY is unset, so the panel
+  // always ends up populated once the fetch completes.
+  const [liveThreats, setLiveThreats] = useState([
+    {
+      title: 'Loading live threats...',
+      description: 'Fetching latest scam alerts from the network.',
+      source: 'System',
+      time: 'Just now',
+    },
+  ]);
+
   // --- DASHBOARD STATS STATE ---
   const [stats, setStats] = useState({
     checks_today: 0,
@@ -85,6 +98,26 @@ export default function App() {
 
     if (user) fetchStats();
   }, [user, refreshStats]);
+
+  // --- FETCH LIVE THREAT FEED ---
+  // Uses hardcoded Render URL — relative path would 404 on Vercel (no proxy).
+  // Backend caches for 1 hour and falls back to mock data if Mediastack is
+  // unavailable, so this rarely blocks.
+  useEffect(() => {
+    const fetchThreats = async () => {
+      try {
+        const res = await fetch(`${RENDER_API}/api/v1/threat-intel/news`);
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          setLiveThreats(data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch live threats");
+        // Keep the loading placeholder — better for the demo than an error card.
+      }
+    };
+    if (user) fetchThreats();
+  }, [user]);
 
   // --- AI CHAT HANDLER ---
   const handleWaSend = async (e) => {
@@ -413,26 +446,18 @@ export default function App() {
                     <span className="text-xs font-bold text-slate uppercase tracking-wider">Makhanda Area</span>
                   </div>
                   <div className="divide-y divide-slate-100">
-                    <div className="p-4 flex items-start gap-4 hover:bg-slate-50 transition-colors">
-                      <div className="w-8 h-8 rounded-full bg-red-100 text-stop flex items-center justify-center shrink-0 mt-1">
-                        <AlertTriangle size={16} />
+                    {liveThreats.map((threat, index) => (
+                      <div key={index} className="p-4 flex items-start gap-4 hover:bg-slate-50 transition-colors">
+                        <div className="w-8 h-8 rounded-full bg-red-100 text-stop flex items-center justify-center shrink-0 mt-1">
+                          <AlertTriangle size={16} />
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-obsidian line-clamp-1">{threat.title}</h4>
+                          <p className="text-sm text-slate-600 mt-1 line-clamp-2">{threat.description}</p>
+                          <p className="text-xs text-slate-400 mt-2 capitalize">Source: {threat.source} · {threat.time}</p>
+                        </div>
                       </div>
-                      <div>
-                        <h4 className="font-bold text-obsidian">Fake FNB SMS circulating</h4>
-                        <p className="text-sm text-slate-600 mt-1">Sellers are receiving SMS messages asking to "verify your account to avoid suspension". Do not click the link.</p>
-                        <p className="text-xs text-slate-400 mt-2">Reported by 4 sellers · 2 hours ago</p>
-                      </div>
-                    </div>
-                    <div className="p-4 flex items-start gap-4 hover:bg-slate-50 transition-colors">
-                      <div className="w-8 h-8 rounded-full bg-amber-100 text-wait flex items-center justify-center shrink-0 mt-1">
-                        <AlertTriangle size={16} />
-                      </div>
-                      <div>
-                        <h4 className="font-bold text-obsidian">Overpayment Scam on Facebook Marketplace</h4>
-                        <p className="text-sm text-slate-600 mt-1">Buyer sends a fake POP for R5,000 instead of R500, then asks for a refund of the difference. Always check your available balance.</p>
-                        <p className="text-xs text-slate-400 mt-2">Reported by 2 sellers · 5 hours ago</p>
-                      </div>
-                    </div>
+                    ))}
                   </div>
                 </div>
 
