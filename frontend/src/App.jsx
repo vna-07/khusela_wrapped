@@ -33,6 +33,9 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState('overview');
   const [isCheckModalOpen, setIsCheckModalOpen] = useState(false);
 
+  // --- READINESS MODAL ---
+  const [isReadinessModalOpen, setIsReadinessModalOpen] = useState(false);
+
   // --- DASHBOARD REFRESH TRIGGER ---
   const [refreshStats, setRefreshStats] = useState(0);
 
@@ -169,6 +172,9 @@ export default function App() {
   const isIndividual = user.type === 'individual';
   const displayWorkspace = user.workspace || user.business;
 
+  // --- READINESS SCORE (used in sidebar + modal) ---
+  const readinessScore = stats.readiness || 0;
+
   // --- MAIN OWNER DASHBOARD ---
   return (
     <div className="animate-in fade-in duration-500 h-screen">
@@ -215,16 +221,20 @@ export default function App() {
           </div>
 
           <div className="p-5">
-            <div className="bg-graphite rounded-xl p-4 border border-white/5">
+            {/* Clickable Readiness card — opens breakdown modal */}
+            <div
+              onClick={() => setIsReadinessModalOpen(true)}
+              className="bg-graphite rounded-xl p-4 border border-white/5 cursor-pointer hover:border-mint/50 transition-colors group"
+            >
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-medium text-slate">Readiness</span>
-                <ChevronRight size={14} className="text-slate" />
+                <span className="text-xs font-medium text-slate group-hover:text-white transition-colors">Readiness</span>
+                <ChevronRight size={14} className="text-slate group-hover:text-mint transition-colors" />
               </div>
               <div className="text-2xl font-bold text-white mb-3 tracking-tight">
                 {stats.readiness ? stats.readiness : '--'}<span className="text-sm text-slate font-normal">/100</span>
               </div>
               <div className="h-1.5 w-full bg-obsidian rounded-full overflow-hidden">
-                <div className="h-full bg-mint rounded-full transition-all duration-1000 ease-out" style={{ width: `${stats.readiness || 0}%` }}></div>
+                <div className="h-full bg-mint rounded-full transition-all duration-1000 ease-out" style={{ width: `${readinessScore}%` }}></div>
               </div>
             </div>
           </div>
@@ -304,7 +314,7 @@ export default function App() {
                   <div onClick={() => setCurrentPage('incidents')} className="cursor-pointer">
                     <StatCard title="Open incidents" value={statsLoading ? "—" : stats.open_incidents} trend="-" danger={stats.open_incidents > 0} />
                   </div>
-                  <div onClick={() => setCurrentPage('settings')} className="cursor-pointer">
+                  <div onClick={() => setIsReadinessModalOpen(true)} className="cursor-pointer">
                     <StatCard 
                       title="Readiness" 
                       value={statsLoading ? "—" : (stats.readiness ? `${stats.readiness}/100` : "Pending")} 
@@ -550,6 +560,95 @@ export default function App() {
                   className="bg-mint text-obsidian font-bold py-3 px-8 rounded-xl hover:bg-white transition-colors w-full"
                 >
                   Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================= READINESS MODAL ================= */}
+        {isReadinessModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-obsidian/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
+
+              <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-[#F8FAFC]">
+                <div>
+                  <h2 className="text-xl font-bold text-obsidian">Security Readiness Score</h2>
+                  <p className="text-sm text-slate">How we calculate your protection level</p>
+                </div>
+                <button onClick={() => setIsReadinessModalOpen(false)} className="text-slate hover:text-obsidian transition-colors">
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-6">
+
+                {/* Score Display — dynamic, respects live users with 0 readiness */}
+                <div className="flex items-center gap-6">
+                  <div
+                    className="relative w-24 h-24 rounded-full flex items-center justify-center shrink-0"
+                    style={{ background: `conic-gradient(#55E6C1 ${readinessScore}%, #E2E8F0 ${readinessScore}%)` }}
+                  >
+                    <div className="absolute inset-1.5 bg-white rounded-full flex items-center justify-center">
+                      <span className="text-3xl font-bold text-obsidian">{readinessScore}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-obsidian text-lg">
+                      {readinessScore >= 70
+                        ? 'Good Foundation'
+                        : readinessScore >= 40
+                        ? 'Building Foundation'
+                        : 'Early Stage'}
+                    </h3>
+                    <p className="text-sm text-slate leading-relaxed mt-1">
+                      Your score is calculated based on completed security controls. It is not a probability of being hacked.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Breakdown */}
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold text-slate uppercase tracking-wider border-b border-slate-100 pb-2">Score Breakdown</h4>
+
+                  <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg border border-green-100">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 size={18} className="text-mint-dark" />
+                      <span className="text-sm font-bold text-obsidian">Payment Verification Rules</span>
+                    </div>
+                    <span className="text-sm font-bold text-mint-dark">+30 pts</span>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg border border-green-100">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 size={18} className="text-mint-dark" />
+                      <span className="text-sm font-bold text-obsidian">Two-Factor Authentication</span>
+                    </div>
+                    <span className="text-sm font-bold text-mint-dark">+25 pts</span>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 bg-amber-50 rounded-lg border border-amber-100">
+                    <div className="flex items-center gap-3">
+                      <AlertTriangle size={18} className="text-wait" />
+                      <span className="text-sm font-bold text-obsidian">Supplier Verification</span>
+                    </div>
+                    <span className="text-sm font-bold text-wait">+17 pts</span>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-200 opacity-60">
+                    <div className="flex items-center gap-3">
+                      <X size={18} className="text-slate-400" />
+                      <span className="text-sm font-bold text-obsidian">Backup & Recovery Plan</span>
+                    </div>
+                    <span className="text-sm font-bold text-slate-400">+0 pts</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => { setIsReadinessModalOpen(false); setCurrentPage('tasks'); }}
+                  className="w-full bg-obsidian text-white font-bold py-3 rounded-xl hover:bg-graphite transition-colors mt-2"
+                >
+                  Go to My Tasks to Improve Score
                 </button>
               </div>
             </div>
