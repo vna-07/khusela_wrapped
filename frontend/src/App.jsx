@@ -50,15 +50,22 @@ export default function App() {
   const [showWrapped, setShowWrapped] = useState(false);
 
   // --- LIVE THREAT FEED STATE ---
-  // Placeholder shows while the backend responds (or during cold-start wake).
-  // Backend has a mock fallback when MEDIASTACK_API_KEY is unset, so the panel
-  // always ends up populated once the fetch completes.
+  // Seeded with the same mock entries the backend falls back to when
+  // MEDIASTACK_API_KEY is unset — so this panel never shows "Loading...",
+  // even during a 30-50s Render cold start. Live data replaces these when
+  // the fetch resolves.
   const [liveThreats, setLiveThreats] = useState([
     {
-      title: 'Loading live threats...',
-      description: 'Fetching latest scam alerts from the network.',
-      source: 'System',
-      time: 'Just now',
+      title: "Fake FNB SMS circulating",
+      description: "Sellers are receiving SMS messages asking to 'verify your account'. Do not click the link.",
+      source: "System Alert",
+      time: "2 hours ago",
+    },
+    {
+      title: "Overpayment Scam on Facebook",
+      description: "Buyer sends a fake POP for R5,000 instead of R500, then asks for a refund. Check your balance.",
+      source: "System Alert",
+      time: "5 hours ago",
     },
   ]);
 
@@ -75,14 +82,19 @@ export default function App() {
   // --- FETCH DASHBOARD STATS (with instant demo fallback) ---
   useEffect(() => {
     const fetchStats = async () => {
-      // 1. INSTANT DEMO FALLBACK (Shows up even if backend is dead)
-      // Numbers match backend's seeded DEMO_INCIDENTS (9 cases, 6 in WAIT/STOP).
+      // 1. INSTANT DEMO FALLBACK
+      //    Set the numbers AND flip loading to false immediately — otherwise
+      //    the cards render "—" for the entire cold-start window even though
+      //    stats already has good numbers sitting in state.
+      //    Do NOT return — we still want the backend fetch so live incidents
+      //    (e.g. Telegram uploads during the pitch) bump the counters.
       if (user.isDemo) {
         setStats({ checks_today: 24, needs_review: 6, open_incidents: 9, readiness: 72, has_data: true });
+        setStatsLoading(false);
       }
 
       try {
-        // 2. HARDCODED RENDER URL (Bypasses Vercel env-var issues)
+        // 2. HARDCODED RENDER URL (relative /api/... would 404 on Vercel)
         const res = await fetch(`${RENDER_API}/api/v1/dashboard/stats`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -100,20 +112,20 @@ export default function App() {
   }, [user, refreshStats]);
 
   // --- FETCH LIVE THREAT FEED ---
-  // Uses hardcoded Render URL — relative path would 404 on Vercel (no proxy).
-  // Backend caches for 1 hour and falls back to mock data if Mediastack is
-  // unavailable, so this rarely blocks.
+  // Fallback state already has realistic mock content, so a failed fetch just
+  // leaves that in place — no "Loading..." stuck forever, no error card.
   useEffect(() => {
     const fetchThreats = async () => {
       try {
         const res = await fetch(`${RENDER_API}/api/v1/threat-intel/news`);
         const data = await res.json();
+        // Only replace the fallback if we got a real, non-empty array back.
         if (Array.isArray(data) && data.length > 0) {
           setLiveThreats(data);
         }
       } catch (err) {
-        console.error("Failed to fetch live threats");
-        // Keep the loading placeholder — better for the demo than an error card.
+        console.error("Failed to fetch live threats, using fallback");
+        // Fallback state already has good content — no action needed.
       }
     };
     if (user) fetchThreats();
