@@ -392,6 +392,39 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* LIVE NETWORK THREAT FEED */}
+                <div className="mt-6 bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                  <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-[#F8FAFC]">
+                    <h3 className="text-lg font-bold text-obsidian flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
+                      Live Network Threat Feed
+                    </h3>
+                    <span className="text-xs font-bold text-slate uppercase tracking-wider">Makhanda Area</span>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    <div className="p-4 flex items-start gap-4 hover:bg-slate-50 transition-colors">
+                      <div className="w-8 h-8 rounded-full bg-red-100 text-stop flex items-center justify-center shrink-0 mt-1">
+                        <AlertTriangle size={16} />
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-obsidian">Fake FNB SMS circulating</h4>
+                        <p className="text-sm text-slate-600 mt-1">Sellers are receiving SMS messages asking to "verify your account to avoid suspension". Do not click the link.</p>
+                        <p className="text-xs text-slate-400 mt-2">Reported by 4 sellers · 2 hours ago</p>
+                      </div>
+                    </div>
+                    <div className="p-4 flex items-start gap-4 hover:bg-slate-50 transition-colors">
+                      <div className="w-8 h-8 rounded-full bg-amber-100 text-wait flex items-center justify-center shrink-0 mt-1">
+                        <AlertTriangle size={16} />
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-obsidian">Overpayment Scam on Facebook Marketplace</h4>
+                        <p className="text-sm text-slate-600 mt-1">Buyer sends a fake POP for R5,000 instead of R500, then asks for a refund of the difference. Always check your available balance.</p>
+                        <p className="text-xs text-slate-400 mt-2">Reported by 2 sellers · 5 hours ago</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
               </div>
             )}
 

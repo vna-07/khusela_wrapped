@@ -54,6 +54,7 @@ DEMO_INCIDENTS = [
     {"id": "KZ-DEMO-1006", "title": "Visual document inspection", "description": "Altered-looking amount region detected on receipt.", "status": "WAIT", "date": "21 Oct, 09:15"},
     {"id": "KZ-DEMO-1007", "title": "Small-business record review", "description": "Stock records with an unexplained discrepancy.", "status": "WAIT", "date": "20 Oct, 13:45"},
     {"id": "KZ-DEMO-1008", "title": "Consistent evidence", "description": "Invoice, receipt and transaction record agree on key fields.", "status": "MATCH", "date": "19 Oct, 08:00"},
+    {"id": "KZ-DEMO-1009", "title": "Bank Statement Anomaly", "description": "Account #12345678 · Duplicate POS purchase detected on 10/30.", "status": "WAIT", "date": "Yesterday, 16:20"},
 ]
 
 # ================= PYDANTIC MODELS =================
@@ -139,8 +140,8 @@ async def get_dashboard_stats(req: DashboardRequest):
     if req.is_demo:
         return {
             "checks_today": 24 + len(live),
-            "needs_review": 5 + live_needs_review,
-            "open_incidents": 8 + len(live),
+            "needs_review": 6 + live_needs_review,
+            "open_incidents": 9 + len(live),
             "readiness": 72,
             "has_data": True,
         }
