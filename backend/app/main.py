@@ -573,8 +573,12 @@ async def fetch_audit_logs(is_demo: bool = Query(False)):
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+# In-memory dedup set — Telegram retries webhooks on non-200, so we guard against
+# duplicate replies. Bounded implicitly by process lifetime; fine for a hackathon.
+TELEGRAM_PROCESSED_MSGS = set()
 
-def send_telegram_message(chat_id: int, text: str, parse_mode: str = None):
+
+def send_telegram_message(chat_id: int, text: str, reply_markup=None, parse_mode=None):
     """Send a message to a Telegram chat. Runs in a threadpool from async callers."""
     if not TELEGRAM_TOKEN:
         print("No Telegram token configured.")
@@ -583,6 +587,8 @@ def send_telegram_message(chat_id: int, text: str, parse_mode: str = None):
     payload = {"chat_id": chat_id, "text": text}
     if parse_mode:
         payload["parse_mode"] = parse_mode
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         r = requests.post(url, json=payload, timeout=5)
         # Telegram returns 400 when Markdown is malformed — retry as plain text
@@ -593,63 +599,147 @@ def send_telegram_message(chat_id: int, text: str, parse_mode: str = None):
         print(f"Failed to send Telegram message: {e}")
 
 
+def get_telegram_menu():
+    """Native Telegram inline keyboard — clickable buttons."""
+    return {
+        "inline_keyboard": [
+            [{"text": "💳 Check a Payment", "callback_data": "menu_payment"}],
+            [{"text": "🔗 Scan a Message/Link", "callback_data": "menu_scan"}],
+            [{"text": "🤖 Ask Khuzeka AI", "callback_data": "menu_ai"}],
+            [{"text": "🚨 Report an Incident", "callback_data": "menu_incident"}],
+        ]
+    }
+
+
+def _answer_callback(callback_id: str):
+    """Remove the loading spinner on a Telegram inline button. Blocking — run in threadpool."""
+    if not TELEGRAM_TOKEN:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+            json={"callback_query_id": callback_id},
+            timeout=5,
+        )
+    except Exception as e:
+        print(f"Failed to answer Telegram callback: {e}")
+
+
 @app.post("/api/v1/webhooks/telegram")
 async def receive_telegram_message(request: Request):
     payload = await request.json()
 
-    if "message" not in payload:
-        return {"status": "no_message"}
+    # ---------- Standard text messages ----------
+    if "message" in payload:
+        message = payload["message"]
+        msg_id = message.get("message_id")
 
-    message = payload["message"]
-    chat_id = message["chat"]["id"]
-    sender_name = message["chat"].get("first_name", "User")
+        # Deduplication — prevents the "6 greetings at once" retry storm
+        if msg_id in TELEGRAM_PROCESSED_MSGS:
+            return {"status": "duplicate"}
+        TELEGRAM_PROCESSED_MSGS.add(msg_id)
 
-    # Handle Text Messages
-    if "text" in message:
-        text = message["text"]
+        chat_id = message["chat"]["id"]
+        sender_name = message["chat"].get("first_name", "User")
 
-        # Log to Audit Trail
-        add_audit_log(
-            channel="Telegram",
-            sender=sender_name,
-            event_type="Message Scan",
-            description=f"Received: '{text[:30]}...'",
-            context="Telegram Bot Integration",
-            status="success",
-            is_demo=False,
-        )
+        if "text" in message:
+            text = message["text"]
 
-        # Smart Routing (Same as Web)
-        is_payment = any(
-            w in text.lower()
-            for w in ["r2450", "paid", "proof", "pending", "overpaid"]
-        )
-
-        if is_payment:
-            verdict = evaluate_payment_proof(text, "tg_hash_123")
-            reason = (
-                verdict.reason_codes[0].description
-                if verdict.reason_codes
-                else "No specific reason recorded."
+            add_audit_log(
+                channel="Telegram",
+                sender=sender_name,
+                event_type="Message Scan",
+                description=f"Received: '{text[:30]}...'",
+                context="Telegram Bot Integration",
+                status="success",
+                is_demo=False,
             )
-            reply_text = (
-                f"🔍 *Analysis Complete*\n"
-                f"Status: {verdict.status}\n"
-                f"Reason: {reason}\n\n"
-                f"{verdict.recommended_action}"
+
+            # Greeting / menu trigger — send the clickable keyboard
+            if text in ("/start", "/menu") or text.lower() in ("menu", "hi", "hello", "hey"):
+                await run_in_threadpool(
+                    send_telegram_message,
+                    chat_id,
+                    "Molo! Welcome to *Khusela Security*.\n\nWhat would you like to do?",
+                    get_telegram_menu(),
+                    "Markdown",
+                )
+                return {"status": "success"}
+
+            # Smart routing — payment check vs free-form AI
+            is_payment = any(
+                w in text.lower()
+                for w in ["r2450", "paid", "proof", "pending", "overpaid"]
             )
+
+            if is_payment:
+                verdict = evaluate_payment_proof(text, "tg_hash_123")
+                reason = (
+                    verdict.reason_codes[0].description
+                    if verdict.reason_codes
+                    else "No specific reason recorded."
+                )
+                reply_text = (
+                    f"🔍 *Analysis Complete*\n"
+                    f"Status: {verdict.status}\n"
+                    f"Reason: {reason}\n\n"
+                    f"{verdict.recommended_action}"
+                )
+                await run_in_threadpool(
+                    send_telegram_message, chat_id, reply_text, None, "Markdown"
+                )
+            else:
+                # Route to Khuzeka AI — await directly; do NOT call asyncio.run()
+                system_prompt = (
+                    "Role: You are Khuzeka, an empathetic, sharp AI assistant. "
+                    "You can answer general questions briefly and helpfully, but "
+                    "always pivot back to how you can help secure their business "
+                    "from fraud."
+                )
+                ai_response = await generate_ai_response(system_prompt, text)
+                # No parse_mode — AI text often contains characters that break Markdown
+                await run_in_threadpool(send_telegram_message, chat_id, ai_response)
+
+    # ---------- Inline keyboard button clicks ----------
+    elif "callback_query" in payload:
+        callback = payload["callback_query"]
+        chat_id = callback["message"]["chat"]["id"]
+        data = callback.get("data", "")
+
+        # Clear the loading spinner
+        await run_in_threadpool(_answer_callback, callback["id"])
+
+        if data == "menu_payment":
             await run_in_threadpool(
-                send_telegram_message, chat_id, reply_text, "Markdown"
+                send_telegram_message,
+                chat_id,
+                "💳 *Check a Payment*\n\nPlease paste the payment text or forward a screenshot of the proof of payment.",
+                None,
+                "Markdown",
             )
-        else:
-            # Route to Khuzeka AI — await directly; do NOT call asyncio.run()
-            system_prompt = (
-                "Role: You are Khuzeka, an empathetic, sharp AI security assistant "
-                "for South African business owners. Keep answers short. Your ONLY "
-                "focus is business security and fraud prevention."
+        elif data == "menu_scan":
+            await run_in_threadpool(
+                send_telegram_message,
+                chat_id,
+                "🔗 *Scan a Message/Link*\n\nPaste the suspicious text or URL here, and I will analyze it for threats.",
+                None,
+                "Markdown",
             )
-            ai_response = await generate_ai_response(system_prompt, text)
-            # No parse_mode — AI text can contain characters that break Markdown
-            await run_in_threadpool(send_telegram_message, chat_id, ai_response)
+        elif data == "menu_ai":
+            await run_in_threadpool(
+                send_telegram_message,
+                chat_id,
+                "🤖 *Ask Khuzeka*\n\nI'm listening! Ask me anything about staying safe or what to do in a tricky situation.",
+                None,
+                "Markdown",
+            )
+        elif data == "menu_incident":
+            await run_in_threadpool(
+                send_telegram_message,
+                chat_id,
+                "🚨 *Report an Incident*\n\nThis feature generates a tamper-evident PDF report for SAPS. Please use the Web Dashboard to generate and download your report.",
+                None,
+                "Markdown",
+            )
 
     return {"status": "success"}
