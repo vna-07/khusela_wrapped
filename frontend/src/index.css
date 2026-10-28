@@ -10,6 +10,14 @@ body {
   margin: 0;
 }
 
+/* Brand-tinted text selection — Khusela Mint instead of the default
+   browser blue. Applied globally so any highlighted text on the page
+   (payload previews, error messages, OCR output) reads as on-brand. */
+::selection {
+  background-color: #55E6C1;
+  color: #090C0F;
+}
+
 /* Custom scrollbar for a premium feel */
 ::-webkit-scrollbar {
   width: 6px;

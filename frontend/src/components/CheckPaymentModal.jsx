@@ -35,10 +35,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
   if (!isOpen) return null;
 
   // ===== Shape-agnostic readers =====
-  // The backend may return a payment verdict (with reason_codes + recommended_action)
-  // OR an investigator verdict (with reason + finding + verification + action).
-  // Both shapes are supported so the modal keeps working before and after the
-  // investigate_document rollout.
   const reasonText =
     verdict?.reason_codes?.[0]?.description ||
     verdict?.reason ||
@@ -53,9 +49,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
   const findingText = verdict?.finding || null;
   const verificationText = verdict?.verification || null;
 
-  // Show the Reason Codes block only when it adds information beyond the
-  // single Reasoning line (i.e., 2+ codes, or a code whose text differs from
-  // reasonText). Prevents duplicate "Amount mismatch" appearing twice.
   const showReasonCodesBlock =
     Array.isArray(verdict?.reason_codes) &&
     verdict.reason_codes.length > 0 &&
@@ -138,7 +131,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
         setErrorMessage(data.error);
       } else if (selectedFile) {
         setExtractedText(data.extracted_text || '');
-        // Accept either shape: data.investigation (new) or data.verdict (legacy).
         setVerdict(data.investigation || data.verdict || null);
         if (data.network_alert) {
           setNetworkAlert(data.network_context || 'Network alert triggered.');
@@ -209,7 +201,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
   };
 
   const saveIncident = async () => {
-    // Derive a title that reflects the actual document type, not always "payment"
     const incidentTitle = networkAlert
       ? 'Network-Flagged Payment'
       : (verdict?.status === 'REVIEW REQUIRED' || verdict?.status === 'UNVERIFIED')
@@ -242,7 +233,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
     const stamp = new Date().toISOString();
     const evidenceSource = (extractedText || inputText || '').trim();
 
-    // Build reason codes block — tolerate missing reason_codes (investigator shape)
     const reasonCodesBlock = (verdict.reason_codes || []).map(
       (r, i) => `${i + 1}. [${r.code || 'N/A'}] ${r.description}`
     );
@@ -287,7 +277,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
     URL.revokeObjectURL(url);
   };
 
-  // ===== Status helpers — support old + new vocabulary =====
   const getStatusIcon = (status) => {
     if (['STOP', 'SUSPICIOUS', 'ESCALATE'].includes(status))
       return <ShieldAlert className="text-stop" size={32} />;
@@ -434,8 +423,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 </div>
               )}
 
-              {/* Reason / Findings / Verification — headings from the spec,
-                  content sourced via the shape-agnostic readers above. */}
               <div className="bg-[#F8FAFC] rounded-xl p-4 border border-slate-200 space-y-4">
                 <div>
                   <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-1">
@@ -465,8 +452,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 )}
               </div>
 
-              {/* Reason Codes — shown only when it adds structured detail beyond
-                  the single Reasoning line above (e.g., multi-code legacy verdicts) */}
               {showReasonCodesBlock && (
                 <div className="bg-[#F8FAFC] rounded-xl p-4 border border-slate-200">
                   <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-3">
@@ -486,7 +471,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 </div>
               )}
 
-              {/* P0.4 reassessment — payment-flow only */}
               {isPaymentFlow && !isSafe && (
                 <div className="p-4 border border-slate-200 rounded-xl bg-slate-50">
                   <label className="block text-sm font-bold text-obsidian mb-2">
@@ -526,25 +510,25 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 </div>
               )}
 
-              <div className="mt-4 p-4 bg-obsidian rounded-xl border border-white/10">
+              {/* ===== Khuzeka AI block — high-contrast on slate-900 ===== */}
+              <div className="mt-4 p-4 bg-slate-900 rounded-xl border border-white/10 shadow-lg">
                 <div className="flex items-center gap-2 mb-3">
-                  <div className="w-6 h-6 rounded-full bg-mint/20 text-mint flex items-center justify-center text-xs font-bold">
-                    K
-                  </div>
+                  <div className="w-6 h-6 rounded-full bg-[#55E6C1]/20 text-[#55E6C1] flex items-center justify-center text-xs font-bold">K</div>
                   <span className="text-white text-sm font-bold">Khuzeka AI</span>
                 </div>
 
-                {aiExplanation ? (
-                  <p className="text-sm text-slate-300 leading-relaxed animate-in fade-in duration-300">
+                {aiLoading ? (
+                  <p className="text-sm text-slate-400 animate-pulse">Khuzeka is analyzing the findings...</p>
+                ) : aiExplanation ? (
+                  <p className="text-sm text-slate-200 leading-relaxed animate-in fade-in duration-300">
                     {aiExplanation}
                   </p>
                 ) : (
                   <button
                     onClick={askKhuzeka}
-                    disabled={aiLoading}
-                    className="text-sm font-bold text-mint hover:text-white transition-colors flex items-center gap-2 disabled:opacity-60"
+                    className="text-sm font-bold text-[#55E6C1] hover:text-white transition-colors flex items-center gap-2"
                   >
-                    {aiLoading ? 'Khuzeka is thinking...' : 'Ask Khuzeka to explain this →'}
+                    Ask Khuzeka to explain this →
                   </button>
                 )}
               </div>
