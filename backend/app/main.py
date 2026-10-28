@@ -5,6 +5,7 @@ from xml.sax.saxutils import escape
 import re
 import io
 import os
+import tempfile
 import requests
 import pytesseract
 from PIL import Image
@@ -579,7 +580,7 @@ TELEGRAM_PROCESSED_MSGS = set()
 
 
 def send_telegram_message(chat_id: int, text: str, reply_markup=None, parse_mode=None):
-    """Send a message to a Telegram chat. Runs in a threadpool from async callers."""
+    """Send a message to a Telegram chat. Blocking — run in threadpool from async callers."""
     if not TELEGRAM_TOKEN:
         print("No Telegram token configured.")
         return
@@ -599,6 +600,49 @@ def send_telegram_message(chat_id: int, text: str, reply_markup=None, parse_mode
         print(f"Failed to send Telegram message: {e}")
 
 
+def send_telegram_document(chat_id: int, file_path: str, caption: str):
+    """Send a document (PDF, etc.) to a Telegram chat. Blocking — run in threadpool."""
+    if not TELEGRAM_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    try:
+        with open(file_path, "rb") as f:
+            requests.post(
+                url,
+                data={"chat_id": chat_id, "caption": caption},
+                files={"document": f},
+                timeout=15,
+            )
+    except Exception as e:
+        print(f"Failed to send Telegram document: {e}")
+
+
+def download_telegram_file(file_id: str, save_path: str) -> bool:
+    """Download a file from Telegram's servers. Blocking — run in threadpool."""
+    if not TELEGRAM_TOKEN:
+        return False
+    try:
+        res = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile",
+            params={"file_id": file_id},
+            timeout=10,
+        ).json()
+        if not res.get("ok"):
+            print(f"getFile failed: {res}")
+            return False
+        file_path = res["result"]["file_path"]
+        download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+        with requests.get(download_url, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            with open(save_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        return True
+    except Exception as e:
+        print(f"Failed to download Telegram file: {e}")
+        return False
+
+
 def get_telegram_menu():
     """Native Telegram inline keyboard — clickable buttons."""
     return {
@@ -606,7 +650,7 @@ def get_telegram_menu():
             [{"text": "💳 Check a Payment", "callback_data": "menu_payment"}],
             [{"text": "🔗 Scan a Message/Link", "callback_data": "menu_scan"}],
             [{"text": "🤖 Ask Khuzeka AI", "callback_data": "menu_ai"}],
-            [{"text": "🚨 Report an Incident", "callback_data": "menu_incident"}],
+            [{"text": "🚨 Open Dashboard", "url": "https://khusela-wrapped.vercel.app"}],
         ]
     }
 
@@ -629,7 +673,7 @@ def _answer_callback(callback_id: str):
 async def receive_telegram_message(request: Request):
     payload = await request.json()
 
-    # ---------- Standard text messages ----------
+    # ---------- Standard messages (text, photo, document) ----------
     if "message" in payload:
         message = payload["message"]
         msg_id = message.get("message_id")
@@ -642,6 +686,7 @@ async def receive_telegram_message(request: Request):
         chat_id = message["chat"]["id"]
         sender_name = message["chat"].get("first_name", "User")
 
+        # 1. HANDLE TEXT MESSAGES
         if "text" in message:
             text = message["text"]
 
@@ -650,12 +695,11 @@ async def receive_telegram_message(request: Request):
                 sender=sender_name,
                 event_type="Message Scan",
                 description=f"Received: '{text[:30]}...'",
-                context="Telegram Bot Integration",
+                context="Telegram Bot",
                 status="success",
                 is_demo=False,
             )
 
-            # Greeting / menu trigger — send the clickable keyboard
             if text in ("/start", "/menu") or text.lower() in ("menu", "hi", "hello", "hey"):
                 await run_in_threadpool(
                     send_telegram_message,
@@ -666,12 +710,10 @@ async def receive_telegram_message(request: Request):
                 )
                 return {"status": "success"}
 
-            # Smart routing — payment check vs free-form AI
             is_payment = any(
                 w in text.lower()
                 for w in ["r2450", "paid", "proof", "pending", "overpaid"]
             )
-
             if is_payment:
                 verdict = evaluate_payment_proof(text, "tg_hash_123")
                 reason = (
@@ -691,14 +733,144 @@ async def receive_telegram_message(request: Request):
             else:
                 # Route to Khuzeka AI — await directly; do NOT call asyncio.run()
                 system_prompt = (
-                    "Role: You are Khuzeka, an empathetic, sharp AI assistant. "
-                    "You can answer general questions briefly and helpfully, but "
-                    "always pivot back to how you can help secure their business "
-                    "from fraud."
+                    "Role: You are Khuzeka, an AI security assistant. Keep answers "
+                    "short and focused on business fraud prevention."
                 )
                 ai_response = await generate_ai_response(system_prompt, text)
-                # No parse_mode — AI text often contains characters that break Markdown
+                # No parse_mode — AI text often contains chars that break Markdown
                 await run_in_threadpool(send_telegram_message, chat_id, ai_response)
+
+        # 2. HANDLE FILE UPLOADS (Images / Photos / Documents)
+        elif "document" in message or "photo" in message:
+            # Extract file metadata
+            if "document" in message:
+                file_id = message["document"]["file_id"]
+                mime_type = message["document"].get("mime_type", "")
+                file_name = message["document"].get("file_name", "document")
+            else:
+                file_id = message["photo"][-1]["file_id"]
+                mime_type = "image/jpeg"
+                file_name = f"{file_id}.jpg"
+
+            # PDFs / other docs not supported yet — polite rejection
+            if mime_type and not mime_type.startswith("image/"):
+                await run_in_threadpool(
+                    send_telegram_message,
+                    chat_id,
+                    "❌ Only image screenshots are supported right now. "
+                    "Please send a screenshot (PNG/JPG) of the payment proof.",
+                )
+                return {"status": "success"}
+
+            # Acknowledge receipt (STOP → WAIT)
+            await run_in_threadpool(
+                send_telegram_message,
+                chat_id,
+                "⏳ *WAIT*: File received. Extracting text and running security checks...",
+                None,
+                "Markdown",
+            )
+
+            # Portable temp paths (works on Windows locally, Linux on Render)
+            temp_dir = tempfile.gettempdir()
+            temp_path = os.path.join(temp_dir, f"tg_{file_id}")
+            pdf_path = None  # initialized to avoid UnboundLocalError in finally
+
+            ok = await run_in_threadpool(download_telegram_file, file_id, temp_path)
+            if not ok:
+                await run_in_threadpool(
+                    send_telegram_message,
+                    chat_id,
+                    "❌ Could not download the file from Telegram servers. Try again.",
+                )
+                return {"status": "success"}
+
+            try:
+                # CHECK — OCR extraction
+                image = Image.open(temp_path)
+                extracted_text = await run_in_threadpool(
+                    pytesseract.image_to_string, image
+                )
+
+                if not extracted_text.strip():
+                    await run_in_threadpool(
+                        send_telegram_message,
+                        chat_id,
+                        "❌ Could not extract readable text from this image. "
+                        "Try a clearer, cropped screenshot.",
+                    )
+                    return {"status": "success"}
+
+                # CHECK — run the security engine
+                verdict = evaluate_payment_proof(extracted_text, file_id)
+                reason = (
+                    verdict.reason_codes[0].description
+                    if verdict.reason_codes
+                    else "No specific reason recorded."
+                )
+
+                # REPORT — send findings
+                reply_text = (
+                    f"📄 *Document Analysed*\n\n"
+                    f"*Status:* {verdict.status}\n"
+                    f"*Reason:* {reason}\n\n"
+                    f"*Recommended Action:* {verdict.recommended_action}"
+                )
+                await run_in_threadpool(
+                    send_telegram_message, chat_id, reply_text, None, "Markdown"
+                )
+
+                # ACT — generate and send the PDF report
+                incident_data = {
+                    "id": f"TG-{msg_id}",
+                    "title": "Telegram Upload",
+                    "description": reason,
+                    "status": verdict.status,
+                    "date": "Just now",
+                }
+                logs = get_audit_logs(is_demo=False)
+                pdf_bytes = await run_in_threadpool(
+                    generate_incident_pdf, incident_data, logs
+                )
+
+                pdf_path = os.path.join(temp_dir, f"tg_report_{msg_id}.pdf")
+                with open(pdf_path, "wb") as f:
+                    f.write(pdf_bytes)
+
+                await run_in_threadpool(
+                    send_telegram_document,
+                    chat_id,
+                    pdf_path,
+                    "Here is your tamper-evident PDF evidence report for SAPS or your bank.",
+                )
+
+                add_audit_log(
+                    channel="Telegram",
+                    sender=sender_name,
+                    event_type="File Upload",
+                    description=f"Processed file: {file_name}",
+                    context=f"Verdict: {verdict.status}",
+                    status="warning",
+                    is_demo=False,
+                )
+
+            except Exception as e:
+                await run_in_threadpool(
+                    send_telegram_message,
+                    chat_id,
+                    f"❌ Error processing file: {str(e)}",
+                )
+            finally:
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
+                if pdf_path and os.path.exists(pdf_path):
+                    try:
+                        os.remove(pdf_path)
+                    except Exception:
+                        pass
 
     # ---------- Inline keyboard button clicks ----------
     elif "callback_query" in payload:
@@ -730,14 +902,6 @@ async def receive_telegram_message(request: Request):
                 send_telegram_message,
                 chat_id,
                 "🤖 *Ask Khuzeka*\n\nI'm listening! Ask me anything about staying safe or what to do in a tricky situation.",
-                None,
-                "Markdown",
-            )
-        elif data == "menu_incident":
-            await run_in_threadpool(
-                send_telegram_message,
-                chat_id,
-                "🚨 *Report an Incident*\n\nThis feature generates a tamper-evident PDF report for SAPS. Please use the Web Dashboard to generate and download your report.",
                 None,
                 "Markdown",
             )
