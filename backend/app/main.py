@@ -860,33 +860,83 @@ async def receive_telegram_message(request: Request):
                     )
                     return {"status": "success"}
 
-                # CHECK — run the security engine
-                verdict = evaluate_payment_proof(extracted_text, file_id)
-                reason = (
-                    verdict.reason_codes[0].description
-                    if verdict.reason_codes
-                    else "No specific reason recorded."
+                text_lower = extracted_text.lower()
+
+                # 2. SMART ROUTING (Classification)
+                # Check if it's a certificate/document rather than a payment
+                is_certificate = any(
+                    w in text_lower
+                    for w in [
+                        "certificate", "university", "degree", "diploma",
+                        "award", "harvard", "your name",
+                    ]
                 )
 
-                # REPORT — send findings
-                reply_text = (
-                    f"📄 *Document Analysed*\n\n"
-                    f"*Status:* {verdict.status}\n"
-                    f"*Reason:* {reason}\n\n"
-                    f"*Recommended Action:* {verdict.recommended_action}"
-                )
-                await run_in_threadpool(
-                    send_telegram_message, chat_id, reply_text, None, "Markdown"
-                )
+                if is_certificate:
+                    # --- CERTIFICATE LOGIC ---
+                    has_placeholder = any(
+                        w in text_lower
+                        for w in ["your name", "astrophizzicks", "insert name", "john doe"]
+                    )
 
-                # ACT — generate and send the PDF report
-                incident_data = {
-                    "id": f"TG-{msg_id}",
-                    "title": "Telegram Upload",
-                    "description": reason,
-                    "status": verdict.status,
-                    "date": "Just now",
-                }
+                    if has_placeholder:
+                        verdict_status = "REVIEW REQUIRED"
+                        reason = "Suspicious certificate content detected (placeholder text)."
+                        action = "Do not rely on this certificate. Verify with the issuing institution."
+                    else:
+                        verdict_status = "UNVERIFIED"
+                        reason = "Extracted certificate text, but issuer authenticity cannot be confirmed by OCR."
+                        action = "Check the issuer's official registry to verify this document."
+
+                    reply_text = (
+                        f"📄 *Document Analysed*\n\n"
+                        f"*Status:* {verdict_status}\n"
+                        f"*Reason:* {reason}\n\n"
+                        f"*Verification:* The issuing institution has not been independently confirmed.\n\n"
+                        f"*Recommended Action:* {action}"
+                    )
+                    await run_in_threadpool(
+                        send_telegram_message, chat_id, reply_text, None, "Markdown"
+                    )
+
+                    # Generate PDF for the certificate review
+                    incident_data = {
+                        "id": f"TG-{msg_id}",
+                        "title": "Certificate Review",
+                        "description": reason,
+                        "status": "WAIT",
+                        "date": "Just now",
+                    }
+
+                else:
+                    # --- PAYMENT LOGIC ---
+                    verdict = evaluate_payment_proof(extracted_text, file_id)
+                    verdict_status = verdict.status
+                    reason = (
+                        verdict.reason_codes[0].description
+                        if verdict.reason_codes
+                        else "No specific reason recorded."
+                    )
+
+                    reply_text = (
+                        f"📄 *Document Analysed*\n\n"
+                        f"*Status:* {verdict_status}\n"
+                        f"*Reason:* {reason}\n\n"
+                        f"*Recommended Action:* {verdict.recommended_action}"
+                    )
+                    await run_in_threadpool(
+                        send_telegram_message, chat_id, reply_text, None, "Markdown"
+                    )
+
+                    incident_data = {
+                        "id": f"TG-{msg_id}",
+                        "title": "Payment Review",
+                        "description": reason,
+                        "status": verdict_status,
+                        "date": "Just now",
+                    }
+
+                # Generate and send PDF
                 logs = get_audit_logs(is_demo=False)
                 pdf_bytes = await run_in_threadpool(
                     generate_incident_pdf, incident_data, logs
@@ -900,7 +950,7 @@ async def receive_telegram_message(request: Request):
                     send_telegram_document,
                     chat_id,
                     pdf_path,
-                    "Here is your tamper-evident PDF evidence report for SAPS or your bank.",
+                    "Here is your Khusela Investigation Report. It includes a document hash for integrity verification.",
                 )
 
                 # --- P0 CROSS-CHANNEL MAGIC ---
@@ -910,9 +960,9 @@ async def receive_telegram_message(request: Request):
                 # live incidents on top of DEMO_INCIDENTS in demo mode).
                 new_incident = {
                     "id": f"TG-{msg_id}",
-                    "title": "Telegram Upload",
-                    "description": reason,
-                    "status": verdict.status,
+                    "title": incident_data["title"],
+                    "description": incident_data["description"],
+                    "status": incident_data["status"],
                     "date": "Just now",
                     "is_demo": False,
                 }
@@ -923,7 +973,7 @@ async def receive_telegram_message(request: Request):
                     sender=sender_name,
                     event_type="File Upload",
                     description=f"Processed file: {file_name}",
-                    context=f"Verdict: {verdict.status}",
+                    context=f"Verdict: {verdict_status}",
                     status="warning",
                     is_demo=False,
                 )
@@ -931,8 +981,8 @@ async def receive_telegram_message(request: Request):
                     channel="Telegram",
                     sender=sender_name,
                     event_type="Incident Created",
-                    description="File processed via Telegram",
-                    context=f"Verdict: {verdict.status}",
+                    description=f"Processed document via Telegram: {msg_id}",
+                    context=f"Verdict: {verdict_status}",
                     status="warning",
                     is_demo=False,
                 )
