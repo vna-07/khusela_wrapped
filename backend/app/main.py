@@ -17,8 +17,14 @@ from app.llm.provider import generate_ai_response
 from app.db.sqlite_store import add_audit_log, get_audit_logs, get_sast_time
 from app.reports.incident_pdf import generate_incident_pdf
 
-# --- WINDOWS ONLY: Tesseract binary location ---
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# --- TESSERACT BINARY PATH ---
+# Windows dev machines need an explicit path; Linux (Render / Docker) resolves
+# `tesseract` from PATH automatically. Guarding with os.name avoids the
+# "C:\... is not installed" error on Linux deploys.
+if os.name == "nt":  # Windows only
+    _win_tess = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    if os.path.exists(_win_tess):
+        pytesseract.pytesseract.tesseract_cmd = _win_tess
 
 app = FastAPI(title="Khusela Core")
 
