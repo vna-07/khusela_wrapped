@@ -16,8 +16,11 @@ import Tasks from './pages/Tasks';
 import SettingsPage from './pages/Settings';
 import CheckPaymentModal from './components/CheckPaymentModal';
 
-// Single source of truth — matches CheckPaymentModal's pattern
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// Fallback to Render if VITE_API_URL isn't set on the deploy
+const API_BASE = import.meta.env.VITE_API_URL || 'https://khusela-wrapped.onrender.com';
+
+// Hardcoded production backend — bypasses Vercel env-var issues for the demo
+const RENDER_API = 'https://khusela-wrapped.onrender.com';
 
 export default function App() {
   // --- LANDING PAGE STATE ---
@@ -50,26 +53,31 @@ export default function App() {
   });
   const [statsLoading, setStatsLoading] = useState(true);
 
-  // --- FETCH DASHBOARD STATS ---
+  // --- FETCH DASHBOARD STATS (with instant demo fallback) ---
   useEffect(() => {
     const fetchStats = async () => {
-      setStatsLoading(true);
+      // 1. INSTANT DEMO FALLBACK (Shows up even if backend is dead)
+      if (user.isDemo) {
+        setStats({ checks_today: 18, needs_review: 2, open_incidents: 1, readiness: 72, has_data: true });
+      }
+
       try {
-        const res = await fetch(`${API_BASE}/api/v1/dashboard/stats`, {
+        // 2. HARDCODED RENDER URL (Bypasses Vercel env-var issues)
+        const res = await fetch(`${RENDER_API}/api/v1/dashboard/stats`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ is_demo: Boolean(user.isDemo) })
+          body: JSON.stringify({ is_demo: user.isDemo })
         });
         const data = await res.json();
         setStats(data);
       } catch (err) {
-        console.error("Failed to load stats", err);
+        console.error("Stats failed to load, using fallback");
       }
       setStatsLoading(false);
     };
 
     if (user) fetchStats();
-  }, [user, refreshStats]); // Refetch whenever an incident is saved
+  }, [user, refreshStats]);
 
   // --- AI CHAT HANDLER ---
   const handleWaSend = async (e) => {
@@ -95,8 +103,8 @@ export default function App() {
       let botResponse = "";
 
       if (isPayment) {
-        // Route to Deterministic Engine
-        const res = await fetch(`${API_BASE}/api/v1/check/payment`, {
+        // Route to Deterministic Engine — HARDCODED RENDER URL
+        const res = await fetch(`${RENDER_API}/api/v1/check/payment`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text_input: userMsg }),
@@ -105,13 +113,13 @@ export default function App() {
         const data = await res.json();
         botResponse = `🔍 *Analysis Complete*\nStatus: ${data.status}\nReason: ${data.reason_codes[0].description}\n\n${data.recommended_action}`;
       } else {
-        // Route to AI (Khuzeka)
-        const res = await fetch(`${API_BASE}/api/v1/assistant/chat`, {
+        // Route to AI (Khuzeka) — HARDCODED RENDER URL
+        const res = await fetch(`${RENDER_API}/api/v1/assistant/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
             message: userMsg,
-            context: `User is currently on the ${currentPage} page. Workspace: ${user.workspace || user.business}.` 
+            context: `User is currently on the ${currentPage} page. Business: ${user.business}.` 
           }),
           signal: controller.signal
         });

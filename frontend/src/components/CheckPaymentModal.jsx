@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = 'https://khusela-wrapped.onrender.com';
 
 export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSaved }) {
   const [inputText, setInputText] = useState('');
