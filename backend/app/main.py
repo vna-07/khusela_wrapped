@@ -5,6 +5,8 @@ from xml.sax.saxutils import escape
 import re
 import io
 import os
+import json
+import asyncio
 import tempfile
 import requests
 import pytesseract
@@ -93,6 +95,9 @@ class ReassessRequest(BaseModel):
     current_verdict: dict
     user_answer: str
 
+class DocumentAnalyzeRequest(BaseModel):
+    text: str
+
 # ================= IN-MEMORY STORES =================
 
 TASKS = [
@@ -131,7 +136,22 @@ def _force_stop(verdict):
 def _needs_review(status):
     """Statuses that count toward the 'needs review' metric — includes both the
     original deterministic-engine statuses AND the investigator's verdicts."""
-    return status in ("STOP", "WAIT", "ESCALATE", "REVIEW REQUIRED", "UNVERIFIED")
+    return status in (
+        "STOP", "WAIT", "ESCALATE",
+        "REVIEW REQUIRED", "UNVERIFIED",
+        "SUSPICIOUS", "INSUFFICIENT EVIDENCE",
+    )
+
+def _call_investigator(text: str, ai_insights=None):
+    """Call investigate_document tolerantly — supports both one-arg (legacy)
+    and two-arg (ai_insights-aware) signatures."""
+    if ai_insights is None:
+        return investigate_document(text)
+    try:
+        return investigate_document(text, ai_insights)
+    except TypeError:
+        # Legacy investigator.py without ai_insights parameter
+        return investigate_document(text)
 
 # ================= HEALTH CHECK =================
 
@@ -188,7 +208,7 @@ async def create_incident(req: IncidentCreate):
         "is_demo": req.is_demo
     }
     INCIDENTS.insert(0, new_incident)
-    
+
     add_audit_log(
         channel="Web Dashboard",
         sender="Owner",
@@ -198,7 +218,7 @@ async def create_incident(req: IncidentCreate):
         status="warning",
         is_demo=req.is_demo
     )
-    
+
     return new_incident
 
 @app.get("/api/v1/incidents/{incident_id}/report")
@@ -329,11 +349,11 @@ async def check_message(req: MessageScanRequest):
     text = req.text_input.lower()
     reasons = []
     status = "INFO"
-    
+
     if any(word in text for word in ["urgent", "immediately", "suspend", "arrest", "2 hours"]):
         reasons.append({"code": "MSG_001", "description": "High-pressure urgency tactics detected", "severity": "high"})
         status = "STOP"
-        
+
     if any(word in text for word in ["otp", "pin", "password", "verify your account", "login"]):
         reasons.append({"code": "MSG_002", "description": "Request for sensitive credentials (OTP/PIN)", "severity": "critical"})
         status = "STOP"
@@ -366,7 +386,7 @@ async def general_chat(req: ChatRequest):
         return {"response": "Hi — what can I help you with today?"}
 
     text_lower = message.lower()
-    
+
     if "task" in text_lower and any(w in text_lower for w in ["create", "set", "add", "make", "remind"]):
         new_task = {
             "id": len(TASKS) + 1,
@@ -375,7 +395,7 @@ async def general_chat(req: ChatRequest):
             "priority": "high"
         }
         TASKS.append(new_task)
-        
+
         add_audit_log(
             channel="Web Dashboard",
             sender="Khuzeka (AI)",
@@ -384,19 +404,19 @@ async def general_chat(req: ChatRequest):
             context="Triggered via AI chat",
             status="success"
         )
-        
+
         return {"response": "I've created that task for you! You can view it on the **My Tasks** page."}
 
     system_prompt = """
     Role: You are Khuzeka, an empathetic, sharp AI security assistant for South African business owners.
     Keep your answers short, helpful, and reassuring. Never share PINs or passwords.
-    
-    CRITICAL: You are NOT a sales assistant. Do not talk about sales stats, inventory, or revenue. 
+
+    CRITICAL: You are NOT a sales assistant. Do not talk about sales stats, inventory, or revenue.
     Your ONLY focus is business security, fraud prevention, and incident response.
-    
+
     If the user asks you to create a task, confirm it has been added to their Task List.
     """
-    
+
     context = (req.context or "").strip()[:_MAX_CONTEXT_CHARS]
 
     if context:
@@ -408,9 +428,50 @@ async def general_chat(req: ChatRequest):
         )
     else:
         user_prompt = message
-    
+
     response = await generate_ai_response(system_prompt, user_prompt)
     return {"response": response}
+
+# ================= AI DOCUMENT ANALYSIS (Structured Insights) =================
+# Unlike /api/v1/assistant/chat (free-form), this endpoint returns a strict
+# JSON shape: summary + observations + missing_evidence + recommendations.
+# Used by the Telegram upload flow to enrich the deterministic verdict.
+
+@app.post("/api/v1/analyze/document")
+async def analyze_document(req: DocumentAnalyzeRequest):
+    system_prompt = """
+    You are an expert forensic document investigator. Analyze the following text
+    extracted from a document (via OCR — allow for minor OCR errors).
+
+    Return a JSON object with EXACTLY these four keys:
+    - summary (string: one-sentence plain-language assessment)
+    - observations (list of strings: concrete facts observed in the text)
+    - missing_evidence (list of strings: what additional evidence is needed)
+    - recommendations (list of strings: case-specific next actions)
+
+    Do NOT hallucinate facts. If unsure, list it in missing_evidence.
+    Return ONLY the JSON object — no prose, no markdown fences.
+    """
+
+    try:
+        ai_response_text = await generate_ai_response(
+            system_prompt, req.text[:2000]
+        )
+
+        # Try to parse the JSON. LLMs sometimes wrap in ```json fences or add
+        # a leading/trailing sentence — grab the first {...} block.
+        match = re.search(r'\{.*\}', ai_response_text, re.DOTALL)
+        if match:
+            try:
+                ai_insights = json.loads(match.group())
+            except json.JSONDecodeError:
+                ai_insights = {"summary": ai_response_text, "recommendations": []}
+        else:
+            ai_insights = {"summary": ai_response_text, "recommendations": []}
+
+        return {"status": "success", "insights": ai_insights}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # ================= TASK MANAGEMENT =================
 
@@ -456,7 +517,7 @@ async def reassess_payment(req: ReassessRequest):
 
 @app.post("/api/v1/webhooks/whatsapp")
 async def receive_whatsapp_message(
-    Body: str = Form(None), 
+    Body: str = Form(None),
     From: str = Form(None),
 ):
     if not Body or not From:
@@ -535,7 +596,7 @@ async def receive_whatsapp_message(
             )
         return _twiml("Please reply with a number (1–5) or 'menu'.")
 
-    # --- State: AWAITING_PAYMENT_PROOF (missing in tutorial) ---
+    # --- State: AWAITING_PAYMENT_PROOF ---
     if session["state"] == "AWAITING_PAYMENT_PROOF":
         verdict = evaluate_payment_proof(text, "wa_hash_123")
         session["state"] = "AUTHENTICATED"
@@ -862,19 +923,41 @@ async def receive_telegram_message(request: Request):
                         send_telegram_message,
                         chat_id,
                         "⚠️ *UNABLE TO ANALYSE*: The image is too blurry or "
-                        "unreadable. Please upload a clearer screenshot or PDF.",
+                        "unreadable. Please upload a clearer screenshot.",
                         None,
                         "Markdown",
                     )
                     return {"status": "success"}
 
-                # 2. Universal Investigation (single engine handles payments,
-                #    certificates, statements, invoices, etc.)
+                # 2. OPTIONAL AI INSIGHTS — fail gracefully, short timeout
+                # Only for non-trivial text. Cold-start + AI latency could push
+                # past Telegram's webhook timeout if we let it run unbounded, so
+                # 10s hard cap.
+                ai_insights = None
+                if len(extracted_text.strip()) >= 30:
+                    try:
+                        system_prompt_insights = (
+                            "You are a forensic document investigator. Based on "
+                            "the following OCR text, respond with 1-2 sentences "
+                            "summarising what the document appears to be and any "
+                            "obvious inconsistency. Be concise.\n\n"
+                            f"{extracted_text[:1200]}"
+                        )
+                        ai_raw = await asyncio.wait_for(
+                            generate_ai_response(system_prompt_insights, extracted_text[:1200]),
+                            timeout=10.0,
+                        )
+                        ai_insights = {"summary": ai_raw.strip()}
+                    except (asyncio.TimeoutError, Exception) as _ai_err:
+                        # Non-fatal — deterministic verdict still ships
+                        ai_insights = None
+
+                # 3. DETERMINISTIC INVESTIGATION (universal investigator)
                 investigation = await run_in_threadpool(
-                    investigate_document, extracted_text
+                    _call_investigator, extracted_text, ai_insights
                 )
 
-                # 3. Format and send the reply
+                # 4. Format reply — append AI insight when available
                 reply_text = (
                     f"📄 *Document Analysis*\n\n"
                     f"*Status:* {investigation['status']}\n"
@@ -883,11 +966,16 @@ async def receive_telegram_message(request: Request):
                     f"🛡️ *Verification:* {investigation['verification']}\n\n"
                     f"👉 *Recommended Action:* {investigation['action']}"
                 )
+                if ai_insights and ai_insights.get("summary"):
+                    # Escape common Markdown breakers so the retry-fallback doesn't fire
+                    ai_summary = ai_insights["summary"].replace("_", "\\_").replace("*", "\\*")
+                    reply_text += f"\n\n🤖 *AI Insight:* {ai_summary}"
+
                 await run_in_threadpool(
                     send_telegram_message, chat_id, reply_text, None, "Markdown"
                 )
 
-                # 4. Generate PDF
+                # 5. Generate PDF
                 incident_data = {
                     "id": f"TG-{msg_id}",
                     "title": f"{investigation['status']} Document",
@@ -911,7 +999,7 @@ async def receive_telegram_message(request: Request):
                     "Here is your Khusela Investigation Report. It includes a document hash for integrity verification.",
                 )
 
-                # 5. Cross-Channel Magic — persist to shared INCIDENTS store
+                # 6. Cross-Channel Magic — persist to shared INCIDENTS store
                 new_incident = {
                     "id": f"TG-{msg_id}",
                     "title": incident_data["title"],
@@ -959,7 +1047,7 @@ async def receive_telegram_message(request: Request):
         # Clear the loading spinner
         await run_in_threadpool(_answer_callback, callback["id"])
 
-        # ---- AUTH callbacks (new) ----
+        # ---- AUTH callbacks ----
         if data == "auth_demo":
             await run_in_threadpool(
                 send_telegram_message,

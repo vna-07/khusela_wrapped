@@ -1,104 +1,94 @@
 import re
+from typing import Any
 
+# Weights for classification
+DOCUMENT_PATTERNS = {
+    "certificate": {"certificate": 3, "university": 2, "degree": 2, "diploma": 2, "award": 2},
+    "invoice": {"invoice": 3, "receipt": 3, "subtotal": 2, "total due": 2, "vat": 2},
+    "statement": {"statement": 3, "opening balance": 3, "closing balance": 3, "transaction history": 2},
+    "supplier_change": {"bank details": 3, "new account": 3, "change of account": 3, "beneficiary": 2},
+    "payment": {"proof of payment": 3, "paid": 1, "pending": 2, "transfer": 2}
+}
 
-def classify_document(text: str) -> str:
+def classify_document(text: str) -> dict:
     text_lower = text.lower()
+    scores = {}
+    for doc_type, patterns in DOCUMENT_PATTERNS.items():
+        scores[doc_type] = sum(weight for phrase, weight in patterns.items() if phrase in text_lower)
+    
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    best_type, best_score = ranked[0]
 
-    # 1. Check for supplier change (highest risk)
-    if any(w in text_lower for w in ["bank details", "new account", "beneficiary", "change of account"]):
-        return "supplier_change"
+    if best_score < 2:
+        return {"type": "unknown", "needs_clarification": True}
 
-    # 2. Check for certificate
-    if any(w in text_lower for w in ["certificate", "diploma", "degree", "university", "award"]):
-        return "certificate"
+    return {"type": best_type, "needs_clarification": False}
 
-    # 3. Check for invoice/receipt
-    if any(w in text_lower for w in [
-        "invoice", "receipt", "bill to", "vat", "subtotal", "total due",
-        "payment amount", "paid on",
-    ]):
-        return "invoice"
+def extract_amounts(text: str) -> list[float]:
+    # Regex to find numbers with 2 decimal places or comma separated
+    matches = re.findall(r'(?:R|\$)?\s?(\d{1,3}(?:,\d{3})*(?:\.\d{2}))', text)
+    return [float(m.replace(',', '')) for m in matches]
 
-    # 4. Check for statement
-    if any(w in text_lower for w in ["statement", "opening balance", "closing balance", "transaction history"]):
-        return "statement"
+def investigate_document(text: str, ai_insights: dict = None) -> dict:
+    classification = classify_document(text)
+    doc_type = classification["type"]
+    
+    if classification["needs_clarification"]:
+        return {
+            "status": "INSUFFICIENT EVIDENCE",
+            "reason": "Document type could not be confidently identified.",
+            "finding": "The text extracted does not match any known document formats (Invoice, Receipt, Certificate, etc.).",
+            "verification": "Unverified.",
+            "action": "Please clarify what this document represents or upload a clearer image."
+        }
 
-    # 5. Check for payment
-    if any(w in text_lower for w in ["proof of payment", "paid", "pending", "transfer", "settled"]):
-        return "payment"
+    findings = []
+    recommendations = []
+    verification_gaps = []
 
-    return "unknown"
-
-
-def investigate_document(text: str) -> dict:
-    doc_type = classify_document(text)
-    text_lower = text.lower()
-
-    # CERTIFICATE INVESTIGATION
+    # 1. CERTIFICATE CHECKS
     if doc_type == "certificate":
         placeholders = ["your name", "insert name", "john doe", "astrophizzicks"]
-        if any(p in text_lower for p in placeholders):
-            return {
-                "status": "REVIEW REQUIRED",
-                "reason": "Suspicious certificate content detected.",
-                "finding": "The document contains placeholder text or unusual qualification titles.",
-                "verification": "Issuer authenticity has NOT been verified.",
-                "action": "Do not rely on this certificate. Contact the issuing institution directly.",
-            }
-        return {
-            "status": "VERIFICATION REQUIRED",
-            "reason": "Certificate format recognised, but authenticity cannot be confirmed via OCR.",
-            "finding": "Text extracted successfully, but no official verification API was queried.",
-            "verification": "Unverified.",
-            "action": "Check the institution's official registry to verify this document.",
-        }
+        if any(p in text.lower() for p in placeholders):
+            findings.append("Document contains placeholder text (e.g., 'Your Name') or unusual titles.")
+            recommendations.append("Do not rely on this certificate. Contact the issuing institution directly.")
+        else:
+            recommendations.append("Check the institution's official registry to verify the award.")
+        verification_gaps.append("Issuer authenticity has NOT been verified against an official registry.")
 
-    # INVOICE / RECEIPT INVESTIGATION
+    # 2. INVOICE CHECKS
     elif doc_type == "invoice":
-        return {
-            "status": "CONSISTENT",
-            "reason": "Invoice/receipt structure detected.",
-            "finding": "The document claims to be a receipt or invoice for payment.",
-            "verification": "Supplier details and payment settlement have NOT been independently verified.",
-            "action": "Confirm the payment in your own banking app before releasing goods. Verify the supplier's banking details via a trusted channel.",
-        }
+        amounts = extract_amounts(text)
+        if len(amounts) >= 2:
+            findings.append(f"Detected multiple financial amounts. Please manually verify totals: {amounts[-3:]}")
+        recommendations.append("Confirm the payment in your own banking app before releasing goods.")
+        verification_gaps.append("Supplier banking details and payment settlement are UNVERIFIED.")
 
-    # SUPPLIER CHANGE INVESTIGATION
+    # 3. SUPPLIER CHANGE CHECKS
     elif doc_type == "supplier_change":
-        return {
-            "status": "SUSPICIOUS",
-            "reason": "Potential Business Email Compromise (BEC) or impersonation.",
-            "finding": "The message requests a change of banking details. This is a high-risk action.",
-            "verification": "The sender's identity has NOT been verified.",
-            "action": "Do not update your records. Call the supplier using a previously known phone number to confirm.",
-        }
+        findings.append("The document requests a change of banking details, which is a high-risk action.")
+        recommendations.append("Call the supplier using a previously known phone number to confirm.")
+        verification_gaps.append("The sender's identity has NOT been verified.")
 
-    # PAYMENT INVESTIGATION
+    # 4. PAYMENT CHECKS
     elif doc_type == "payment":
         from app.engine.evaluate import evaluate_payment_proof
         verdict = evaluate_payment_proof(text, "investigator_hash")
+        
+        status_map = {"MATCH": "CONSISTENT", "WAIT": "REVIEW REQUIRED", "STOP": "SUSPICIOUS"}
+        findings.append(verdict.reason_codes[0].description)
+        recommendations.append(verdict.recommended_action)
+        verification_gaps.append("Bank settlement is unverified. Only your banking app can confirm this.")
+        
+        if ai_insights:
+            findings.append(ai_insights.get("summary", "AI analysis complete."))
+            recommendations.extend(ai_insights.get("recommendations", []))
 
-        status_map = {
-            "MATCH": "CONSISTENT",
-            "WAIT": "REVIEW REQUIRED",
-            "STOP": "SUSPICIOUS",
-            "ESCALATE": "SUSPICIOUS",
-        }
-        new_status = status_map.get(verdict.status, "INSUFFICIENT EVIDENCE")
-
-        return {
-            "status": new_status,
-            "reason": verdict.reason_codes[0].description if verdict.reason_codes else "No specific reason recorded.",
-            "finding": "Payment evidence extracted.",
-            "verification": "Bank settlement is unverified. Only your banking app can confirm this.",
-            "action": verdict.recommended_action,
-        }
-
-    # UNKNOWN
+    # Combine deterministic findings with AI (if available)
     return {
-        "status": "INSUFFICIENT EVIDENCE",
-        "reason": "Document type could not be confidently identified.",
-        "finding": "We read the text, but we do not know what this document represents.",
-        "verification": "Unverified.",
-        "action": "Please clarify what this document is, or upload a higher quality image.",
+        "status": "REVIEW REQUIRED" if findings else "CONSISTENT",
+        "reason": f"Document classified as: {doc_type.capitalize()}",
+        "finding": " ".join(findings) if findings else "Document structure looks standard.",
+        "verification": " ".join(verification_gaps) if verification_gaps else "Verified.",
+        "action": " ".join(recommendations) if recommendations else "Proceed with standard caution."
     }
