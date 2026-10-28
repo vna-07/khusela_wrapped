@@ -16,6 +16,9 @@ import Tasks from './pages/Tasks';
 import SettingsPage from './pages/Settings';
 import CheckPaymentModal from './components/CheckPaymentModal';
 
+// Single source of truth — matches CheckPaymentModal's pattern
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 export default function App() {
   // --- LANDING PAGE STATE ---
   const [hasEntered, setHasEntered] = useState(false);
@@ -52,7 +55,7 @@ export default function App() {
     const fetchStats = async () => {
       setStatsLoading(true);
       try {
-        const res = await fetch('import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/dashboard/stats', {
+        const res = await fetch(`${API_BASE}/api/v1/dashboard/stats`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_demo: Boolean(user.isDemo) })
@@ -81,7 +84,8 @@ export default function App() {
     setWaMessages(prev => [...prev, { id: typingId, sender: 'bot', text: 'Khuzeka is typing...', isTyping: true }]);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000); 
+    // 60s — Render free tier can take 30–50s to wake from cold start
+    const timeoutId = setTimeout(() => controller.abort(), 60000); 
 
     try {
       // SMART ROUTING: Check if it's a task command first. If so, bypass payment engine.
@@ -92,7 +96,7 @@ export default function App() {
 
       if (isPayment) {
         // Route to Deterministic Engine
-        const res = await fetch('import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/check/payment', {
+        const res = await fetch(`${API_BASE}/api/v1/check/payment`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text_input: userMsg }),
@@ -102,7 +106,7 @@ export default function App() {
         botResponse = `🔍 *Analysis Complete*\nStatus: ${data.status}\nReason: ${data.reason_codes[0].description}\n\n${data.recommended_action}`;
       } else {
         // Route to AI (Khuzeka)
-        const res = await fetch('import.meta.env.VITE_API_URL || "http://localhost:8000"/api/v1/assistant/chat', {
+        const res = await fetch(`${API_BASE}/api/v1/assistant/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 

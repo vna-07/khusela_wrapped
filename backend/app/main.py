@@ -644,13 +644,19 @@ def download_telegram_file(file_id: str, save_path: str) -> bool:
 
 
 def get_telegram_menu():
-    """Native Telegram inline keyboard — clickable buttons."""
+    """Structured Telegram inline keyboard — the 'Khuzeka Intelligence' layout."""
     return {
         "inline_keyboard": [
-            [{"text": "💳 Check a Payment", "callback_data": "menu_payment"}],
-            [{"text": "🔗 Scan a Message/Link", "callback_data": "menu_scan"}],
-            [{"text": "🤖 Ask Khuzeka AI", "callback_data": "menu_ai"}],
-            [{"text": "🚨 Open Dashboard", "url": "https://khusela-wrapped.vercel.app"}],
+            [{"text": "🔎 New Investigation", "callback_data": "menu_new"}],
+            [
+                {"text": "📁 My Cases", "callback_data": "menu_cases"},
+                {"text": "📄 My Reports", "callback_data": "menu_reports"},
+            ],
+            [
+                {"text": "🖥️ Web Dashboard", "url": "https://khusela-wrapped.vercel.app"},
+                {"text": "🧪 Try Demo", "callback_data": "menu_demo"},
+            ],
+            [{"text": "⚙️ Settings & Help", "callback_data": "menu_help"}],
         ]
     }
 
@@ -881,27 +887,57 @@ async def receive_telegram_message(request: Request):
         # Clear the loading spinner
         await run_in_threadpool(_answer_callback, callback["id"])
 
-        if data == "menu_payment":
+        if data == "menu_new":
             await run_in_threadpool(
                 send_telegram_message,
                 chat_id,
-                "💳 *Check a Payment*\n\nPlease paste the payment text or forward a screenshot of the proof of payment.",
+                "📄 *New Investigation*\n\nPlease upload a PDF, photo, screenshot, "
+                "bank statement, or paste a message. I will examine the evidence "
+                "and identify inconsistencies.",
                 None,
                 "Markdown",
             )
-        elif data == "menu_scan":
+        elif data == "menu_cases":
             await run_in_threadpool(
                 send_telegram_message,
                 chat_id,
-                "🔗 *Scan a Message/Link*\n\nPaste the suspicious text or URL here, and I will analyze it for threats.",
+                "📁 *My Cases*\n\nYou have 1 open case:\n"
+                "`KZ-1042` · Payment Evidence Review\n"
+                "Status: *Awaiting Information*\n\n"
+                "To add evidence, simply upload a new file.",
                 None,
                 "Markdown",
             )
-        elif data == "menu_ai":
+        elif data == "menu_reports":
             await run_in_threadpool(
                 send_telegram_message,
                 chat_id,
-                "🤖 *Ask Khuzeka*\n\nI'm listening! Ask me anything about staying safe or what to do in a tricky situation.",
+                "📄 *My Reports*\n\nYou have no generated reports yet. "
+                "Upload a document to start an investigation, and I will "
+                "generate a PDF report for you.",
+                None,
+                "Markdown",
+            )
+        elif data == "menu_demo":
+            await run_in_threadpool(
+                send_telegram_message,
+                chat_id,
+                "🧪 *Demo Mode*\n\nOpening the demo workspace. You can test the "
+                "system with synthetic data by clicking the link below.\n"
+                "https://khusela-wrapped.vercel.app",
+                None,
+                "Markdown",
+            )
+        elif data == "menu_help":
+            await run_in_threadpool(
+                send_telegram_message,
+                chat_id,
+                "⚙️ *Settings & Help*\n\n"
+                "• Supported files: PDF, JPG, PNG\n"
+                "• Privacy: We do not share your data.\n"
+                "• Limit: 5MB per file.\n\n"
+                "To connect your Telegram to the web dashboard, generate a "
+                "link code from the Settings page.",
                 None,
                 "Markdown",
             )
