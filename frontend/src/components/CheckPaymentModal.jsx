@@ -53,6 +53,17 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
   const findingText = verdict?.finding || null;
   const verificationText = verdict?.verification || null;
 
+  // Show the Reason Codes block only when it adds information beyond the
+  // single Reasoning line (i.e., 2+ codes, or a code whose text differs from
+  // reasonText). Prevents duplicate "Amount mismatch" appearing twice.
+  const showReasonCodesBlock =
+    Array.isArray(verdict?.reason_codes) &&
+    verdict.reason_codes.length > 0 &&
+    !(
+      verdict.reason_codes.length === 1 &&
+      verdict.reason_codes[0].description === reasonText
+    );
+
   const isPaymentFlow = PAYMENT_STATUSES.includes(verdict?.status);
   const isSafe = SAFE_STATUSES.includes(verdict?.status);
 
@@ -128,8 +139,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
       } else if (selectedFile) {
         setExtractedText(data.extracted_text || '');
         // Accept either shape: data.investigation (new) or data.verdict (legacy).
-        // Either can be the investigator dict or the payment-engine dict —
-        // reasonText/actionText below abstract the difference.
         setVerdict(data.investigation || data.verdict || null);
         if (data.network_alert) {
           setNetworkAlert(data.network_context || 'Network alert triggered.');
@@ -213,7 +222,7 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: incidentTitle,
-          description: `Verdict: ${verdict.status} · ${reasonText}`,
+          description: `Status: ${verdict.status} · ${reasonText}`,
           status: verdict.status,
           is_demo: user.isDemo,
         }),
@@ -249,8 +258,8 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
       `Source:           ${selectedFile ? `Image upload (${selectedFile.name})` : 'Text input'}`,
       `Verdict status:   ${verdict.status}`,
       `Recommended:      ${actionText}`,
-      ...(findingText ? ['', 'Finding:', '--------', findingText] : []),
-      ...(verificationText ? ['', 'Verification:', '-------------', verificationText] : []),
+      ...(findingText ? ['', 'Findings:', '---------', findingText] : []),
+      ...(verificationText ? ['', 'Verification Status:', '--------------------', verificationText] : []),
       ...(networkAlert
         ? ['', 'NETWORK ALERT:', '--------------', networkAlert]
         : []),
@@ -286,7 +295,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
       return <Clock className="text-wait" size={32} />;
     if (['MATCH', 'CONSISTENT'].includes(status))
       return <ShieldCheck className="text-mint-dark" size={32} />;
-    // UNVERIFIED, INFO, and any unknown status → neutral, not falsely safe
     return <ShieldAlert className="text-slate" size={32} />;
   };
 
@@ -426,30 +434,40 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 </div>
               )}
 
-              {/* NEW: Show finding + verification when the investigator shape is present */}
-              {(findingText || verificationText) && (
-                <div className="bg-[#F8FAFC] rounded-xl p-4 border border-slate-200 space-y-3">
-                  {findingText && (
-                    <div>
-                      <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-2">
-                        Finding
-                      </h4>
-                      <p className="text-sm text-obsidian leading-relaxed">{findingText}</p>
-                    </div>
-                  )}
-                  {verificationText && (
-                    <div>
-                      <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-2">
-                        Verification
-                      </h4>
-                      <p className="text-sm text-obsidian leading-relaxed">{verificationText}</p>
-                    </div>
-                  )}
+              {/* Reason / Findings / Verification — headings from the spec,
+                  content sourced via the shape-agnostic readers above. */}
+              <div className="bg-[#F8FAFC] rounded-xl p-4 border border-slate-200 space-y-4">
+                <div>
+                  <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-1">
+                    Reasoning
+                  </h4>
+                  <p className="text-sm text-obsidian font-medium">{reasonText}</p>
                 </div>
-              )}
 
-              {/* Reason codes — only when the backend returned them (payment shape) */}
-              {Array.isArray(verdict.reason_codes) && verdict.reason_codes.length > 0 && (
+                {findingText && (
+                  <div>
+                    <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-1">
+                      Findings
+                    </h4>
+                    <p className="text-sm text-obsidian leading-relaxed">{findingText}</p>
+                  </div>
+                )}
+
+                {verificationText && (
+                  <div>
+                    <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-1">
+                      Verification Status
+                    </h4>
+                    <p className="text-sm text-wait font-medium leading-relaxed">
+                      {verificationText}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Reason Codes — shown only when it adds structured detail beyond
+                  the single Reasoning line above (e.g., multi-code legacy verdicts) */}
+              {showReasonCodesBlock && (
                 <div className="bg-[#F8FAFC] rounded-xl p-4 border border-slate-200">
                   <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-3">
                     Reason Codes
