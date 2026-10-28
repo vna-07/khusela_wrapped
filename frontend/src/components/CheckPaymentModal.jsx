@@ -7,6 +7,13 @@ import {
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
 const API_BASE = 'https://khusela-wrapped.onrender.com';
 
+// Statuses that map to a payment-flow result — only these show the
+// reassessment prompt ("Did you check your bank balance?")
+const PAYMENT_STATUSES = ['STOP', 'WAIT', 'ESCALATE', 'SUSPICIOUS'];
+
+// Statuses where the case is already resolved — no reassessment needed
+const SAFE_STATUSES = ['MATCH', 'CONSISTENT'];
+
 export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSaved }) {
   const [inputText, setInputText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -19,16 +26,37 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
   const [aiLoading, setAiLoading] = useState(false);
   const [isRecovery, setIsRecovery] = useState(false);
 
-  // ===== P0.3: Network Alert state =====
   const [networkAlert, setNetworkAlert] = useState(null);
 
-  // ===== P0.4: Reassessment state =====
   const [followUp, setFollowUp] = useState('');
   const [reassessLoading, setReassessLoading] = useState(false);
   const [reassessError, setReassessError] = useState(null);
 
   if (!isOpen) return null;
 
+  // ===== Shape-agnostic readers =====
+  // The backend may return a payment verdict (with reason_codes + recommended_action)
+  // OR an investigator verdict (with reason + finding + verification + action).
+  // Both shapes are supported so the modal keeps working before and after the
+  // investigate_document rollout.
+  const reasonText =
+    verdict?.reason_codes?.[0]?.description ||
+    verdict?.reason ||
+    verdict?.finding ||
+    'No specific reason recorded.';
+
+  const actionText =
+    verdict?.recommended_action ||
+    verdict?.action ||
+    'See reason above.';
+
+  const findingText = verdict?.finding || null;
+  const verificationText = verdict?.verification || null;
+
+  const isPaymentFlow = PAYMENT_STATUSES.includes(verdict?.status);
+  const isSafe = SAFE_STATUSES.includes(verdict?.status);
+
+  // ===== Reset / close =====
   const resetAll = () => {
     setInputText('');
     setSelectedFile(null);
@@ -37,10 +65,10 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
     setVerdict(null);
     setAiExplanation(null);
     setIsRecovery(false);
-    setNetworkAlert(null);       // P0.3
-    setFollowUp('');             // P0.4
-    setReassessLoading(false);   // P0.4
-    setReassessError(null);      // P0.4
+    setNetworkAlert(null);
+    setFollowUp('');
+    setReassessLoading(false);
+    setReassessError(null);
   };
 
   const handleClose = () => {
@@ -99,13 +127,16 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
         setErrorMessage(data.error);
       } else if (selectedFile) {
         setExtractedText(data.extracted_text || '');
-        setVerdict(data.verdict || null);
+        // Accept either shape: data.investigation (new) or data.verdict (legacy).
+        // Either can be the investigator dict or the payment-engine dict —
+        // reasonText/actionText below abstract the difference.
+        setVerdict(data.investigation || data.verdict || null);
         if (data.network_alert) {
           setNetworkAlert(data.network_context || 'Network alert triggered.');
         } else {
           setNetworkAlert(null);
         }
-        if (!data.verdict) {
+        if (!data.investigation && !data.verdict) {
           setErrorMessage('The engine did not return a verdict for this image.');
         }
       } else {
@@ -119,7 +150,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
     setLoading(false);
   };
 
-  // ===== P0.4: Reassessment handler =====
   const handleReassess = async () => {
     if (!followUp.trim()) return;
     setReassessLoading(true);
@@ -139,8 +169,7 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
       } else {
         setVerdict(data);
         setFollowUp('');
-        // Manual verification overrides the network signal
-        if (data.status === 'MATCH') {
+        if (data.status === 'MATCH' || data.status === 'CONSISTENT') {
           setNetworkAlert(null);
         }
       }
@@ -171,13 +200,20 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
   };
 
   const saveIncident = async () => {
+    // Derive a title that reflects the actual document type, not always "payment"
+    const incidentTitle = networkAlert
+      ? 'Network-Flagged Payment'
+      : (verdict?.status === 'REVIEW REQUIRED' || verdict?.status === 'UNVERIFIED')
+      ? 'Certificate Review'
+      : 'Payment Check Flagged';
+
     try {
       await fetch(`${API_BASE}/api/v1/incidents`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: networkAlert ? 'Network-Flagged Payment' : 'Payment Check Flagged',
-          description: `Verdict: ${verdict.status} · ${verdict.reason_codes[0].description}`,
+          title: incidentTitle,
+          description: `Verdict: ${verdict.status} · ${reasonText}`,
           status: verdict.status,
           is_demo: user.isDemo,
         }),
@@ -197,6 +233,14 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
     const stamp = new Date().toISOString();
     const evidenceSource = (extractedText || inputText || '').trim();
 
+    // Build reason codes block — tolerate missing reason_codes (investigator shape)
+    const reasonCodesBlock = (verdict.reason_codes || []).map(
+      (r, i) => `${i + 1}. [${r.code || 'N/A'}] ${r.description}`
+    );
+    if (reasonCodesBlock.length === 0 && reasonText) {
+      reasonCodesBlock.push(`1. ${reasonText}`);
+    }
+
     const lines = [
       'KHUSELA — INCIDENT EVIDENCE REPORT',
       '==================================',
@@ -204,7 +248,9 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
       `Reported by:      Thabo (Small Business Owner)`,
       `Source:           ${selectedFile ? `Image upload (${selectedFile.name})` : 'Text input'}`,
       `Verdict status:   ${verdict.status}`,
-      `Recommended:      ${verdict.recommended_action}`,
+      `Recommended:      ${actionText}`,
+      ...(findingText ? ['', 'Finding:', '--------', findingText] : []),
+      ...(verificationText ? ['', 'Verification:', '-------------', verificationText] : []),
       ...(networkAlert
         ? ['', 'NETWORK ALERT:', '--------------', networkAlert]
         : []),
@@ -215,9 +261,7 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
       '',
       'Reason codes:',
       '-------------',
-      ...(verdict.reason_codes || []).map(
-        (r, i) => `${i + 1}. [${r.code || 'N/A'}] ${r.description}`
-      ),
+      ...reasonCodesBlock,
       '',
       'Notes:',
       '------',
@@ -234,18 +278,26 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
     URL.revokeObjectURL(url);
   };
 
+  // ===== Status helpers — support old + new vocabulary =====
   const getStatusIcon = (status) => {
-    if (status === 'STOP' || status === 'ESCALATE')
+    if (['STOP', 'SUSPICIOUS', 'ESCALATE'].includes(status))
       return <ShieldAlert className="text-stop" size={32} />;
-    if (status === 'WAIT') return <Clock className="text-wait" size={32} />;
-    return <ShieldCheck className="text-mint-dark" size={32} />;
+    if (['WAIT', 'REVIEW REQUIRED', 'VERIFICATION REQUIRED'].includes(status))
+      return <Clock className="text-wait" size={32} />;
+    if (['MATCH', 'CONSISTENT'].includes(status))
+      return <ShieldCheck className="text-mint-dark" size={32} />;
+    // UNVERIFIED, INFO, and any unknown status → neutral, not falsely safe
+    return <ShieldAlert className="text-slate" size={32} />;
   };
 
   const getStatusColor = (status) => {
-    if (status === 'STOP' || status === 'ESCALATE')
+    if (['STOP', 'SUSPICIOUS', 'ESCALATE'].includes(status))
       return 'border-stop/20 bg-[#FEE2E2]/50 text-stop';
-    if (status === 'WAIT') return 'border-wait/20 bg-[#FEF3C7]/50 text-wait';
-    return 'border-mint-dark/20 bg-[#D1FAE5]/50 text-mint-dark';
+    if (['WAIT', 'REVIEW REQUIRED', 'VERIFICATION REQUIRED'].includes(status))
+      return 'border-wait/20 bg-[#FEF3C7]/50 text-wait';
+    if (['MATCH', 'CONSISTENT'].includes(status))
+      return 'border-mint-dark/20 bg-[#D1FAE5]/50 text-mint-dark';
+    return 'border-slate-200 bg-slate-50 text-slate';
   };
 
   return (
@@ -340,7 +392,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
             </>
           ) : (
             <div className="space-y-4">
-              {/* ===== P0.3: NETWORK ALERT BANNER ===== */}
               {networkAlert && (
                 <div className="bg-red-500/10 border-2 border-red-500 text-red-600 p-4 rounded-xl font-bold flex items-start gap-3 animate-pulse">
                   <ShieldAlert size={24} className="shrink-0 mt-0.5" />
@@ -356,7 +407,7 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 {getStatusIcon(verdict.status)}
                 <div>
                   <h3 className="font-bold text-lg">{verdict.status}</h3>
-                  <p className="text-sm opacity-90">{verdict.recommended_action}</p>
+                  <p className="text-sm opacity-90">{actionText}</p>
                 </div>
               </div>
 
@@ -375,25 +426,50 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 </div>
               )}
 
-              <div className="bg-[#F8FAFC] rounded-xl p-4 border border-slate-200">
-                <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-3">
-                  Reason Codes
-                </h4>
-                <ul className="space-y-2">
-                  {verdict.reason_codes.map((r, i) => (
-                    <li
-                      key={i}
-                      className="text-sm text-obsidian flex items-start gap-2 font-medium"
-                    >
-                      <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-slate shrink-0"></div>
-                      {r.description}
-                    </li>
-                  ))}
-                </ul>
-              </div>
+              {/* NEW: Show finding + verification when the investigator shape is present */}
+              {(findingText || verificationText) && (
+                <div className="bg-[#F8FAFC] rounded-xl p-4 border border-slate-200 space-y-3">
+                  {findingText && (
+                    <div>
+                      <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-2">
+                        Finding
+                      </h4>
+                      <p className="text-sm text-obsidian leading-relaxed">{findingText}</p>
+                    </div>
+                  )}
+                  {verificationText && (
+                    <div>
+                      <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-2">
+                        Verification
+                      </h4>
+                      <p className="text-sm text-obsidian leading-relaxed">{verificationText}</p>
+                    </div>
+                  )}
+                </div>
+              )}
 
-              {/* ===== P0.4: FOLLOW-UP & REASSESSMENT ===== */}
-              {verdict.status !== 'MATCH' && (
+              {/* Reason codes — only when the backend returned them (payment shape) */}
+              {Array.isArray(verdict.reason_codes) && verdict.reason_codes.length > 0 && (
+                <div className="bg-[#F8FAFC] rounded-xl p-4 border border-slate-200">
+                  <h4 className="text-xs font-bold text-slate uppercase tracking-wider mb-3">
+                    Reason Codes
+                  </h4>
+                  <ul className="space-y-2">
+                    {verdict.reason_codes.map((r, i) => (
+                      <li
+                        key={i}
+                        className="text-sm text-obsidian flex items-start gap-2 font-medium"
+                      >
+                        <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-slate shrink-0"></div>
+                        {r.description}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* P0.4 reassessment — payment-flow only */}
+              {isPaymentFlow && !isSafe && (
                 <div className="p-4 border border-slate-200 rounded-xl bg-slate-50">
                   <label className="block text-sm font-bold text-obsidian mb-2">
                     Khuzeka asks: Did you check your available balance in your banking app?
@@ -455,7 +531,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 )}
               </div>
 
-              {/* ================= RECOVERY MODE ================= */}
               {!isRecovery ? (
                 <button
                   type="button"
@@ -503,7 +578,6 @@ export default function CheckPaymentModal({ isOpen, onClose, user, onIncidentSav
                 </div>
               )}
 
-              {/* ================= SAVE / DISCARD ================= */}
               <div className="flex gap-3 mt-4">
                 <button
                   type="button"
